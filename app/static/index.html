@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Homelab Metrics Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Homelab <span>Metrics</span> Dashboard</h1>
+    <div class="conn-status"><span class="dot" id="conn-dot"></span><span id="conn-label">connecting…</span></div>
+  </header>
+
+  <div class="host-grid" id="host-grid"></div>
+
+  <section class="panel">
+    <h2>Temperature trend</h2>
+    <div class="sub">CPU + NVMe composite temperature, with each host's own lm-sensors warning/critical lines. Shaded bands mark detected backup windows.</div>
+    <div class="tabs" id="host-tabs"></div>
+    <div class="tabs" id="range-tabs">
+      <button data-range="6">6h</button>
+      <button data-range="24" class="active">24h</button>
+      <button data-range="168">7d</button>
+      <button data-range="720">30d</button>
+    </div>
+    <div id="chart"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Backup events</h2>
+    <div class="sub">Detected raspiBackup runs on Argos, with the peak temperature reached during each one.</div>
+    <div id="events-wrap"><div class="empty-note">No backup events recorded yet.</div></div>
+  </section>
+
+  <footer>Polling Glances on Alcyone / Argos / Selene · 30-day metric retention · 365-day backup-event retention</footer>
+</div>
+
+<script src="/static/echarts.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

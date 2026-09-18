@@ -1,0 +1,23 @@
+# Portainer-managed stack (matches the OfficeAQI deployment pattern:
+# a single container, deployed/updated through the Portainer UI on Argos
+# rather than a manual `docker compose up`).
+#
+# Port 8098 was picked after checking Argos's existing services
+# (8080 Gatus, 8081 HomeLab-Pi5 web mirror, 8090 in use, 3000 Homepage,
+# 9443 Portainer) - re-check for collisions before first deploy if the
+# stack has changed since.
+services:
+  homelab-metrics:
+    build: .
+    container_name: homelab-metrics
+    restart: unless-stopped
+    ports:
+      - "8098:8000"
+    volumes:
+      - homelab_metrics_data:/app/data
+    # Talks to Alcyone/Argos/Selene's Glances APIs over the LAN (see
+    # app/config.py) - no special network mode needed since it's on the
+    # same bridge as the host's LAN-reachable Docker network.
+
+volumes:
+  homelab_metrics_data:
