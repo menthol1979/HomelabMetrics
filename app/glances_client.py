@@ -1,7 +1,15 @@
 """
-Thin async client for a single host's Glances (v4) REST API, plus
-normalization of the /sensors and /smart responses into the flat metric
-shape the rest of the app works with.
+Slow-tier async client for a single host's Glances (v4) REST API: NVMe
+Sensor 1/2, fan RPM, per-host warn/crit thresholds (all from /sensors),
+plus critical_warning/media_errors/percentage_used (from /smart).
+
+cpu_temp and the NVMe composite temperature are deliberately NOT
+fetched here any more - those come from HomeLab-Pi5's web mirror at the
+fast tier instead (see mirror_client.py and config.py's docstring), so
+this client only needs to run at config.SLOW_POLL_INTERVAL.
+
+is_backup_running() is still used every fast-tier tick (Argos only), so
+it stays independent of the slow/fast split.
 """
 
 import logging
@@ -25,16 +33,15 @@ class GlancesClient:
         resp.raise_for_status()
         return resp.json()
 
-    async def poll(self, client: httpx.AsyncClient) -> dict[str, Any] | None:
-        """Fetch sensors + smart for this host and normalize into one dict.
-
-        Returns None (and logs) if the host is unreachable, rather than
-        raising, so one down host never stops the others from polling.
-        """
+    async def poll_slow(self, client: httpx.AsyncClient) -> dict[str, Any] | None:
+        """Fetch /sensors + /smart for this host and normalize the
+        slow-tier fields into one dict. Returns None (and logs) if the
+        host is unreachable, rather than raising, so one down host
+        never stops the others from polling."""
         try:
             sensors, smart = await self._get(client, "sensors"), await self._get(client, "smart")
         except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("poll failed for host=%s: %s", self.host_key, exc)
+            logger.warning("slow poll failed for host=%s: %s", self.host_key, exc)
             return None
 
         return {
@@ -65,17 +72,14 @@ class GlancesClient:
         out: dict[str, Any] = {}
 
         cpu_entry = by_label.get(self.cfg["cpu_temp_label"])
-        out["cpu_temp"] = cpu_entry.get("value") if cpu_entry else None
         out["cpu_temp_warn"], out["cpu_temp_crit"] = self._sane_thresholds(cpu_entry)
 
-        for field, label in config.NVME_SENSOR_LABELS.items():
-            entry = by_label.get(label)
+        # Sensor 1/2 only - "Composite" is supplied by the mirror at the
+        # fast tier instead (see module docstring).
+        for field in ("nvme_sensor1_temp", "nvme_sensor2_temp"):
+            entry = by_label.get(config.NVME_SENSOR_LABELS[field])
             out[field] = entry.get("value") if entry else None
 
-        # Only "Composite" carries meaningful lm-sensors thresholds on
-        # this fleet - "Sensor 1"/"Sensor 2" report a 65261 sentinel
-        # (no threshold configured), so thresholds are only captured
-        # here rather than per individual NVMe sensor.
         composite_entry = by_label.get(config.NVME_SENSOR_LABELS["nvme_composite_temp"])
         out["nvme_composite_warn"], out["nvme_composite_crit"] = self._sane_thresholds(composite_entry)
 

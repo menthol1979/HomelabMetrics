@@ -12,33 +12,61 @@ CDN dependency), packaged as one Docker container.
 
 ## How it works
 
-No new agents run on any host. All three machines already expose Glances
-(v4) on port 61208 with the `sensors` and `smart` plugins enabled. The
-backend polls each host's `/api/4/sensors`, `/api/4/smart`, and — on
-Argos only — `/api/4/processlist` (to detect a running
-`raspiBackup`/`pigz`/`gzip` process), and writes normalized rows to
-SQLite.
+No new agents run on any host, and this deliberately does **not** poll
+Glances a second time for data the HomeLab-Pi5 project (the physical
+Argos/Alcyone/Selene dashboard) is already polling every 3 seconds for
+itself. Polling is split into three pieces instead:
 
-- **Normal polling:** every 45s per host.
-- **During a detected backup on Argos:** drops to every 12s so the
-  temperature curve is actually resolved, and a `backup_events` row
-  tracks start/end/duration/peak NVMe & CPU temp for that run.
-- **Live push:** every poll is also broadcast over `/ws` to any open
-  browser tab, so the dashboard updates without polling itself.
+- **Fast tier (every 3s, `MIRROR_POLL_INTERVAL`):** one HTTP call to
+  HomeLab-Pi5's own live-state web mirror at
+  `http://192.168.1.17:8081/api/state`, which already carries
+  `cpu_temp`/`ssd_temp` (NVMe composite) for Argos, Alcyone, and Selene
+  in a single response — that project's own 3s Glances poll, reused
+  rather than duplicated. This tier drives the chart resolution and the
+  backup-event peak-temperature tracking.
+- **Slow tier (every 60s per host, `SLOW_POLL_INTERVAL`):** a direct,
+  low-frequency call to each host's own `/api/4/sensors` and
+  `/api/4/smart` for the handful of fields the mirror doesn't carry:
+  NVMe Sensor 1/2, fan RPM, each host's own warn/crit thresholds, and
+  the NVMe `critical_warning`/`media_errors`/`percentage_used` fields.
+  These change slowly, so 60s is plenty, and this tier's load is
+  negligible next to HomeLab-Pi5's continuous 3s poll.
+- **Backup detection:** piggybacks on the fast tier's tick —
+  `/api/4/processlist` on Argos only, matched against
+  `raspiBackup`/`pigz`/`gzip` — so a backup's start/end is caught at
+  the same ~3s resolution as the temperatures being compared against
+  it. Nothing else in the fleet watches for this, so it isn't a
+  duplicate of anything.
+- **Live push:** every fast-tier tick is broadcast over `/ws` to any
+  open browser tab, so the dashboard updates without polling itself.
+
+Each stored metric row combines the latest fast-tier reading with
+whatever the slow tier most recently cached for that host — so a row
+is always "complete" even though its fields update at different rates
+under the hood.
+
+**Trade-off worth knowing:** `cpu_temp`/`nvme_composite_temp` now
+depend on HomeLab-Pi5's `home-dash.service` (and its web-mirror thread)
+being up on Argos. If that service is down, those two fields go blank
+in this dashboard until it's back — the slow-tier fields (wear,
+critical_warning, media_errors, fan, thresholds) and backup detection
+are unaffected, since they're polled independently.
 
 ### Data sources, mapped
 
 | Metric | Source |
 | --- | --- |
-| CPU temperature | `/api/4/sensors`, host-specific label (`Package id 0` on Alcyone, `cpu_thermal 0` on Argos/Selene — see `app/config.py`) |
-| NVMe composite + 2 sensor temps | `/api/4/sensors`, labels `Composite` / `Sensor 1` / `Sensor 2` (same on all three hosts) |
-| NVMe critical-warning flag, percentage-used (wear), media errors | `/api/4/smart`, looked up by the attribute's `key` field (`criticalWarning`, `percentageUsed`, `integrityErrors` — Glances' name for nvme-cli's `media_errors`) |
-| Fan RPM | `/api/4/sensors`, label `pwmfan 0` — present on Argos/Selene's Active Coolers, absent on Alcyone |
-| Backup detection | `/api/4/processlist` on Argos, matched against `raspiBackup`/`pigz`/`gzip` |
+| CPU temperature | HomeLab-Pi5 web mirror, `cpu_temp_c` (guarded by `has_cpu_temp`) |
+| NVMe composite temp | HomeLab-Pi5 web mirror, `ssd_temp_c` (guarded by `has_ssd_temp`) |
+| NVMe Sensor 1 / Sensor 2 temps | `/api/4/sensors`, labels `Sensor 1` / `Sensor 2` (same on all three hosts) — slow tier |
+| NVMe critical-warning flag, percentage-used (wear), media errors | `/api/4/smart`, looked up by the attribute's `key` field (`criticalWarning`, `percentageUsed`, `integrityErrors` — Glances' name for nvme-cli's `media_errors`) — slow tier |
+| Fan RPM | `/api/4/sensors`, label `pwmfan 0` — present on Argos/Selene's Active Coolers, absent on Alcyone — slow tier |
+| Backup detection | `/api/4/processlist` on Argos, matched against `raspiBackup`/`pigz`/`gzip` — fast tier |
 
 Per-sensor `warning`/`critical` thresholds are pulled from Glances too
-(each host's own lm-sensors config) and used for color-coding on the
-frontend, rather than one hardcoded threshold for every host.
+(each host's own lm-sensors config, slow tier) and used for
+color-coding on the frontend, rather than one hardcoded threshold for
+every host.
 
 ### Known limitation: no `throttled` (undervoltage/thermal) flag
 

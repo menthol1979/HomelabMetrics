@@ -1,21 +1,24 @@
 """
 Static configuration for the Homelab Metrics Dashboard.
 
-Host list and per-host quirks were derived by querying each host's live
-Glances API (v4) directly:
+Polling is split across three independent tiers to avoid duplicating
+the HomeLab-Pi5 project's own 3s Glances polling of Argos/Alcyone/Selene
+(see that repo's config.example.h - CFG_*_GLANCES_POLL_INTERVAL_SEC):
 
-  - Alcyone (Intel OptiPlex, lm-sensors coretemp): CPU temp is best read
-    from the "Package id 0" label; no fan_speed sensor is exposed.
-  - Argos / Selene (Raspberry Pi 5): CPU temp is "cpu_thermal 0"; both
-    expose a "pwmfan 0" fan_speed reading (official Active Cooler).
-  - All three report the NVMe drive's temperature three ways under
-    /api/4/sensors: "Composite", "Sensor 1", "Sensor 2" - these are the
-    "both sensors, where the drive reports two" the spec asks for.
-
-Glances' own per-sensor "warning"/"critical" thresholds (also returned by
-/api/4/sensors) are used by the frontend for color-coding instead of a
-hardcoded threshold, so each host's own lm-sensors config stays the
-source of truth.
+  - FAST tier (MIRROR_POLL_INTERVAL): one HTTP call to HomeLab-Pi5's own
+    "web mirror" at MIRROR_URL, which already dumps its live-polled
+    cpu_temp/ssd_temp for all three hosts in one response. No duplicate
+    Glances traffic at all for these two fields.
+  - SLOW tier (SLOW_POLL_INTERVAL): a direct, low-frequency call per
+    host to Glances' own /sensors and /smart, for the handful of fields
+    the web mirror doesn't carry (NVMe Sensor 1/2, fan RPM, per-host
+    warn/crit thresholds, critical_warning, media_errors,
+    percentage_used). These change slowly, so 60s is plenty and this
+    tier's load is negligible next to HomeLab-Pi5's continuous 3s poll.
+  - Backup detection: piggybacks on the fast tier's tick (processlist
+    check against Argos only) so a backup's start/end is caught at the
+    same ~3s resolution as the temperature readings that get compared
+    against it - nothing else in the fleet watches for this.
 """
 
 HOSTS = {
@@ -42,7 +45,18 @@ HOSTS = {
     },
 }
 
-# NVMe temperature sensor labels shared across all hosts (see docstring).
+# HomeLab-Pi5's own live-state web mirror (src/web_state_json.cpp),
+# already polling Argos/Alcyone/Selene's Glances every 3s for its
+# physical dashboard. Its per-host JSON carries: cpu_temp_c,
+# has_cpu_temp, ssd_temp_c (NVMe "Composite" reading only),
+# has_ssd_temp, ssd_health_pct, has_ssd_health - see that repo's
+# src/web_state_json.cpp::glances_json() for the authoritative shape.
+MIRROR_URL = "http://192.168.1.17:8081/api/state"
+MIRROR_POLL_INTERVAL = 3
+
+# NVMe temperature sensor labels shared across all hosts (only used by
+# the slow tier now - the fast tier's composite reading comes from the
+# mirror instead).
 NVME_SENSOR_LABELS = {
     "nvme_composite_temp": "Composite",
     "nvme_sensor1_temp": "Sensor 1",
@@ -68,9 +82,7 @@ SMART_KEYS = {
 # plugin - no SSH/new agent required.
 BACKUP_PROCESS_MARKERS = ["raspiBackup", "pigz", "gzip"]
 
-# Polling intervals (seconds).
-NORMAL_POLL_INTERVAL = 45
-BACKUP_POLL_INTERVAL = 12
+SLOW_POLL_INTERVAL = 60
 
 HTTP_TIMEOUT = 6
 

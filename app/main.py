@@ -66,12 +66,19 @@ async def lifespan(app: FastAPI):
         logger.warning("marked %d stale in-progress backup event(s) as interrupted on startup", interrupted)
 
     _stop_event.clear()
+    slow_cache = poller.SlowFieldsCache()
     for host_key in config.HOSTS:
         _background_tasks.append(
-            asyncio.create_task(poller.run_host_poller(host_key, broadcaster.broadcast, _stop_event))
+            asyncio.create_task(poller.run_slow_poller(host_key, slow_cache, _stop_event))
         )
+    _background_tasks.append(
+        asyncio.create_task(poller.run_fast_loop(slow_cache, broadcaster.broadcast, _stop_event))
+    )
     _background_tasks.append(asyncio.create_task(poller.run_retention_sweeper(_stop_event)))
-    logger.info("started pollers for hosts: %s", list(config.HOSTS))
+    logger.info(
+        "started fast loop (mirror=%s, every %ss) + slow pollers (every %ss) for hosts: %s",
+        config.MIRROR_URL, config.MIRROR_POLL_INTERVAL, config.SLOW_POLL_INTERVAL, list(config.HOSTS),
+    )
 
     yield
 
