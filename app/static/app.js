@@ -11,6 +11,7 @@
     hosts: [],                 // [{key, display_name, is_backup_host}]
     latest: {},                // host -> most recent metric dict
     lastSeenAt: {},            // host -> Date.now() of last metric (for staleness)
+    lastMessageAt: null,       // Date.now() of the most recent WS message, any host
     activeHost: null,
     activeRangeHours: 24,
     seriesCache: {},           // `${host}:${rangeHours}` -> [metric,...] ascending by ts
@@ -18,7 +19,7 @@
   };
 
   const chartEl = document.getElementById("chart");
-  const chart = echarts.init(chartEl, null, { renderer: "svg" });
+  const chart = echarts.init(chartEl, null, { renderer: "canvas" });
   window.addEventListener("resize", () => chart.resize());
 
   function fmtTemp(v) {
@@ -60,9 +61,11 @@
       card.id = `card-${h.key}`;
       card.style.setProperty("--host-color", hostColor(h.key));
       card.innerHTML = `
-        <h2><span class="swatch"></span>${h.display_name}<span class="stale-badge">STALE</span></h2>
+        <div class="card-head">
+          <div class="name"><span class="swatch"></span>${h.display_name}<span class="stale-badge">STALE</span></div>
+          <div class="hero na" data-f="nvme_composite_temp"><span class="v">—</span><span class="unit">°C NVMe</span></div>
+        </div>
         <div class="metric-row"><span class="label">CPU temp</span><span class="value na" data-f="cpu_temp">—</span></div>
-        <div class="metric-row"><span class="label">NVMe composite</span><span class="value na" data-f="nvme_composite_temp">—</span></div>
         <div class="metric-row"><span class="label">NVMe sensor 1 / 2</span><span class="value na" data-f="nvme_sensors">—</span></div>
         <div class="metric-row"><span class="label">Wear (percentage used)</span><span class="value na" data-f="nvme_percentage_used">—</span></div>
         <div class="metric-row"><span class="label">Critical warning</span><span class="value na" data-f="nvme_critical_warning">—</span></div>
@@ -87,9 +90,15 @@
       el.className = `value ${cls}`;
     };
 
+    const heroCls = classifyTemp(m.nvme_composite_temp, m.nvme_composite_warn, m.nvme_composite_crit, "nvme_composite_temp");
+    const hero = card.querySelector('[data-f="nvme_composite_temp"]');
+    if (hero) {
+      hero.className = `hero ${heroCls}`;
+      hero.querySelector(".v").textContent = m.nvme_composite_temp === null || m.nvme_composite_temp === undefined
+        ? "—" : m.nvme_composite_temp.toFixed(1);
+    }
+
     set("cpu_temp", fmtTemp(m.cpu_temp), classifyTemp(m.cpu_temp, m.cpu_temp_warn, m.cpu_temp_crit, "cpu_temp"));
-    set("nvme_composite_temp", fmtTemp(m.nvme_composite_temp),
-      classifyTemp(m.nvme_composite_temp, m.nvme_composite_warn, m.nvme_composite_crit, "nvme_composite_temp"));
     set("nvme_sensors", `${fmtTemp(m.nvme_sensor1_temp)} / ${fmtTemp(m.nvme_sensor2_temp)}`, "na");
     set("nvme_percentage_used", fmtPct(m.nvme_percentage_used), m.nvme_percentage_used > 20 ? "warn" : "ok");
     set("nvme_critical_warning",
@@ -109,13 +118,23 @@
       const seenAt = state.lastSeenAt[h.key];
       const card = document.getElementById(`card-${h.key}`);
       if (!card) continue;
-      // Stale if nothing heard in 3x the normal poll interval (45s) or 3 minutes, whichever's larger.
+      // Stale if nothing heard in 3 minutes (well past the 3s fast-tier cadence).
       if (!seenAt || now - seenAt > 3 * 60 * 1000) {
         card.classList.add("stale");
       }
     }
   }
   setInterval(stalenessSweep, 15000);
+
+  // ---------- "Updated: Xs ago" ticker ----------
+
+  const updatedAgoEl = document.getElementById("updated-ago");
+  function updateAgoText() {
+    if (!updatedAgoEl || state.lastMessageAt === null) return;
+    const secs = Math.max(0, Math.round((Date.now() - state.lastMessageAt) / 1000));
+    updatedAgoEl.textContent = `Updated: ${secs}s ago`;
+  }
+  setInterval(updateAgoText, 1000);
 
   // ---------- Chart ----------
 
@@ -147,7 +166,7 @@
   async function loadSeries(host, rangeHours) {
     const cacheKey = `${host}:${rangeHours}`;
     const since = new Date(Date.now() - rangeHours * 3600 * 1000).toISOString();
-    const rows = await fetchJSON(`/api/metrics?host=${encodeURIComponent(host)}&since=${encodeURIComponent(since)}&limit=5000`);
+    const rows = await fetchJSON(`/api/metrics?host=${encodeURIComponent(host)}&since=${encodeURIComponent(since)}&limit=8000`);
     rows.reverse(); // API returns newest-first; chart wants ascending
     state.seriesCache[cacheKey] = rows;
     return rows;
@@ -162,18 +181,37 @@
         const end = ev.end_ts ? new Date(ev.end_ts).getTime() : Date.now();
         if (end < rangeStartMs) return null;
         return [
-          { xAxis: start, itemStyle: { color: "rgba(255,159,92,0.12)" } },
+          { xAxis: start, itemStyle: { color: "rgba(255,159,92,0.14)" } },
           { xAxis: end },
         ];
       })
       .filter(Boolean);
   }
 
+  function glowSeries(name, color, data, extra) {
+    return {
+      name, type: "line", data, showSymbol: false, smooth: 0.25,
+      animationDuration: 400, animationDurationUpdate: 300,
+      lineStyle: { color, width: 2.4, shadowColor: color, shadowBlur: 12 },
+      itemStyle: { color },
+      areaStyle: {
+        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+          { offset: 0, color: color + "50" },
+          { offset: 1, color: color + "00" },
+        ]),
+      },
+      ...extra,
+    };
+  }
+
   async function loadAndRenderChart() {
     if (!state.activeHost) return;
     const rows = await loadSeries(state.activeHost, state.activeRangeHours);
-    const latestThresholds = rows.length ? rows[rows.length - 1] : {};
+    buildChartOption(rows);
+  }
 
+  function buildChartOption(rows) {
+    const latestThresholds = rows.length ? rows[rows.length - 1] : {};
     const cpuData = rows.map((r) => [r.ts, r.cpu_temp]);
     const nvmeData = rows.map((r) => [r.ts, r.nvme_composite_temp]);
     const rangeStartMs = Date.now() - state.activeRangeHours * 3600 * 1000;
@@ -182,6 +220,29 @@
     const cpuCrit = latestThresholds.cpu_temp_crit ?? DEFAULT_THRESHOLDS.cpu_temp.crit;
     const nvmeWarn = latestThresholds.nvme_composite_warn ?? DEFAULT_THRESHOLDS.nvme_composite_temp.warn;
     const nvmeCrit = latestThresholds.nvme_composite_crit ?? DEFAULT_THRESHOLDS.nvme_composite_temp.crit;
+
+    const cpuSeries = glowSeries("CPU temp", "#4fd1ff", cpuData, {
+      markLine: {
+        symbol: "none", label: { formatter: "{b}", color: "#8794ab" },
+        lineStyle: { type: "dashed" },
+        data: [
+          { yAxis: cpuWarn, lineStyle: { color: "#ffb545" }, name: "CPU warn" },
+          { yAxis: cpuCrit, lineStyle: { color: "#ff4d6d" }, name: "CPU crit" },
+        ],
+      },
+      markArea: { data: backupMarkAreas(state.activeHost, rangeStartMs) },
+    });
+
+    const nvmeSeries = glowSeries("NVMe composite", "#ff9f5c", nvmeData, {
+      markLine: {
+        symbol: "none", label: { formatter: "{b}", color: "#8794ab" },
+        lineStyle: { type: "dashed" },
+        data: [
+          { yAxis: nvmeWarn, lineStyle: { color: "#ffb545" }, name: "NVMe warn" },
+          { yAxis: nvmeCrit, lineStyle: { color: "#ff4d6d" }, name: "NVMe crit" },
+        ],
+      },
+    });
 
     chart.setOption({
       backgroundColor: "transparent",
@@ -195,33 +256,7 @@
         axisLine: { lineStyle: { color: "#1e2740" } }, axisLabel: { color: "#8794ab" },
         splitLine: { lineStyle: { color: "#161d2e" } },
       },
-      series: [
-        {
-          name: "CPU temp", type: "line", showSymbol: false, data: cpuData,
-          lineStyle: { width: 2, color: "#4fd1ff" }, areaStyle: { color: "rgba(79,209,255,0.08)" },
-          markLine: {
-            symbol: "none", label: { formatter: "{b}", color: "#8794ab" },
-            lineStyle: { type: "dashed" },
-            data: [
-              { yAxis: cpuWarn, lineStyle: { color: "#ffb545" }, name: "CPU warn" },
-              { yAxis: cpuCrit, lineStyle: { color: "#ff4d6d" }, name: "CPU crit" },
-            ],
-          },
-          markArea: { data: backupMarkAreas(state.activeHost, rangeStartMs) },
-        },
-        {
-          name: "NVMe composite", type: "line", showSymbol: false, data: nvmeData,
-          lineStyle: { width: 2, color: "#ff9f5c" }, areaStyle: { color: "rgba(255,159,92,0.08)" },
-          markLine: {
-            symbol: "none", label: { formatter: "{b}", color: "#8794ab" },
-            lineStyle: { type: "dashed" },
-            data: [
-              { yAxis: nvmeWarn, lineStyle: { color: "#ffb545" }, name: "NVMe warn" },
-              { yAxis: nvmeCrit, lineStyle: { color: "#ff4d6d" }, name: "NVMe crit" },
-            ],
-          },
-        },
-      ],
+      series: [cpuSeries, nvmeSeries],
     });
   }
 
@@ -233,14 +268,6 @@
     rows.push(m);
     const cutoff = Date.now() - state.activeRangeHours * 3600 * 1000;
     while (rows.length && new Date(rows[0].ts).getTime() < cutoff) rows.shift();
-    loadAndRenderChartFromCache();
-  }
-
-  function loadAndRenderChartFromCache() {
-    // Re-render using already-cached rows (no network round trip) - used for live ticks.
-    const cacheKey = `${state.activeHost}:${state.activeRangeHours}`;
-    const rows = state.seriesCache[cacheKey] || [];
-    const latestThresholds = rows.length ? rows[rows.length - 1] : {};
     chart.setOption({
       series: [
         { data: rows.map((r) => [r.ts, r.cpu_temp]) },
@@ -283,9 +310,9 @@
     const dot = document.getElementById("conn-dot");
     const label = document.getElementById("conn-label");
 
-    ws.addEventListener("open", () => { dot.className = "dot live"; label.textContent = "live"; });
+    ws.addEventListener("open", () => { dot.className = "dot live"; label.textContent = "Live"; });
     ws.addEventListener("close", () => {
-      dot.className = "dot down"; label.textContent = "disconnected, retrying…";
+      dot.className = "dot down"; label.textContent = "Disconnected — retrying…";
       setTimeout(connectWebSocket, 3000);
     });
     ws.addEventListener("error", () => ws.close());
@@ -294,6 +321,8 @@
       if (msg.type !== "metric") return;
       const m = msg.data;
       state.latest[m.host] = m;
+      state.lastMessageAt = Date.now();
+      updateAgoText();
       updateHostCard(m);
       appendLiveToChart(m);
       if (m.host === "argos") {

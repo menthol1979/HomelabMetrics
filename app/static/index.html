@@ -10,8 +10,12 @@
 <div class="wrap">
   <header class="top">
     <h1>Homelab <span>Metrics</span> Dashboard</h1>
-    <div class="conn-status"><span class="dot" id="conn-dot"></span><span id="conn-label">connecting…</span></div>
   </header>
+
+  <div class="status-panel" id="status-panel">
+    <span class="status-panel-left"><span class="dot" id="conn-dot"></span><span id="conn-label">connecting…</span></span>
+    <span id="updated-ago"></span>
+  </div>
 
   <div class="host-grid" id="host-grid"></div>
 
