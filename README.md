@@ -123,6 +123,59 @@ of a manual redeploy.
 4. Metric data persists in the `homelab_metrics_data` Docker volume, so
    redeploys/updates don't lose history.
 
+### Updating the stack after a code change
+
+Portainer's "Pull and redeploy" for a git-sourced, `build:`-based stack
+has two failure modes that have actually been hit here — don't assume
+a green "success" toast in Portainer means the running container
+matches the latest commit:
+
+- **Never check "Re-pull image".** This stack has no registry image —
+  Docker builds it locally from the Dockerfile. Checking that box makes
+  Portainer try to `docker pull docker.io/library/homelab-metrics-homelab-metrics:latest`,
+  which doesn't exist on Docker Hub, and it fails with "pull access
+  denied". Leave it unchecked.
+- **Even unchecked, "Pull and redeploy" can silently recreate the
+  container from a stale checkout** — Portainer reports success but
+  the app's still running old code. If that happens, fix it directly
+  on Argos:
+
+  ```
+  # 1. Find the stack's compose folder (path is inside Portainer's own
+  #    container, not Argos's real filesystem):
+  docker inspect homelab-metrics --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}'
+  # -> /data/compose/<N>
+
+  # 2. Translate that to Argos's real path via Portainer's own bind mount:
+  docker inspect portainer --format '{{ range .Mounts }}{{ .Destination }} -> {{ .Source }}{{ "\n" }}{{ end }}'
+  # -> /data -> /home/nickkal/docker/portainer/data
+  #    so the real folder is /home/nickkal/docker/portainer/data/compose/<N>
+
+  # 3. That folder has no .git of its own - get a fresh checkout and sync it in:
+  git clone https://github.com/menthol1979/HomelabMetrics.git /tmp/homelabmetrics-fresh
+  sudo rsync -a --exclude '.git' /tmp/homelabmetrics-fresh/ /home/nickkal/docker/portainer/data/compose/<N>/
+  rm -rf /tmp/homelabmetrics-fresh
+
+  # 4. Rebuild under the SAME project name Portainer itself uses
+  #    ("homelab-metrics"), so it reattaches to the existing data volume
+  #    instead of creating a stray new one:
+  sudo docker rm -f homelab-metrics
+  sudo bash -c 'cd /home/nickkal/docker/portainer/data/compose/<N> && docker compose -p homelab-metrics up -d --build'
+  ```
+
+  A bare `docker compose up -d --build` from that folder *without*
+  `-p homelab-metrics` derives the project name from the folder itself
+  (e.g. `7`), which creates a parallel image/network/volume and looks
+  exactly like the metric history got wiped — it didn't, it's just
+  sitting unused under the wrong project name. `docker volume ls | grep
+  homelab` shows both if this happens; the real one is
+  `homelab-metrics_homelab_metrics_data`.
+
+- **After any rebuild, hard-refresh the browser tab (Cmd+Shift+R).** A
+  stale cached `app.js`/`index.html` pair can throw a JS error before
+  the page ever opens its WebSocket, which looks exactly like being
+  stuck on "connecting…" forever even though the backend is healthy.
+
 ## Repo setup
 
 Two things push this to the Mac rather than doing it here, same as

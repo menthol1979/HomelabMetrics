@@ -213,6 +213,7 @@
   }
 
   const AXIS_COMMON = {
+    scale: true,
     axisLine: { lineStyle: { color: "#1e2740" } },
     axisLabel: { color: "#8794ab" },
     splitLine: { lineStyle: { color: "#161d2e" } },
@@ -222,9 +223,33 @@
     return !!state.hosts.find((h) => h.key === hostKey)?.has_fan;
   }
 
+  // Trailing moving average over [ts, value] pairs, ignoring nulls within
+  // the window. Window size scales with row count so the line reads as
+  // smooth at any zoom level (6h vs 30d) instead of showing raw 3s jitter.
+  function smoothingWindow(n) {
+    return Math.max(1, Math.round(n / 150));
+  }
+  function movingAverage(pairs, window) {
+    if (window <= 1) return pairs;
+    const out = new Array(pairs.length);
+    const buf = [];
+    let sum = 0, count = 0;
+    for (let i = 0; i < pairs.length; i++) {
+      const v = pairs[i][1];
+      if (v !== null && v !== undefined) { buf.push(v); sum += v; count++; }
+      else buf.push(null);
+      if (buf.length > window) {
+        const removed = buf.shift();
+        if (removed !== null && removed !== undefined) { sum -= removed; count--; }
+      }
+      out[i] = [pairs[i][0], count ? sum / count : null];
+    }
+    return out;
+  }
+
   function buildLeftOption(rows, rangeStartMs, latestThresholds) {
     const hasFan = hostHasFan(state.activeHost);
-    const cpuData = rows.map((r) => [r.ts, r.cpu_temp]);
+    const cpuData = movingAverage(rows.map((r) => [r.ts, r.cpu_temp]), smoothingWindow(rows.length));
 
     const cpuWarn = latestThresholds.cpu_temp_warn ?? DEFAULT_THRESHOLDS.cpu_temp.warn;
     const cpuCrit = latestThresholds.cpu_temp_crit ?? DEFAULT_THRESHOLDS.cpu_temp.crit;
@@ -264,7 +289,7 @@
   }
 
   function buildRightOption(rows, latestThresholds) {
-    const nvmeData = rows.map((r) => [r.ts, r.nvme_composite_temp]);
+    const nvmeData = movingAverage(rows.map((r) => [r.ts, r.nvme_composite_temp]), smoothingWindow(rows.length));
 
     const nvmeWarn = latestThresholds.nvme_composite_warn ?? DEFAULT_THRESHOLDS.nvme_composite_temp.warn;
     const nvmeCrit = latestThresholds.nvme_composite_crit ?? DEFAULT_THRESHOLDS.nvme_composite_temp.crit;
@@ -308,14 +333,15 @@
     rows.push(m);
     const cutoff = Date.now() - state.activeRangeHours * 3600 * 1000;
     while (rows.length && new Date(rows[0].ts).getTime() < cutoff) rows.shift();
-    const leftSeries = [{ data: rows.map((r) => [r.ts, r.cpu_temp]) }];
+    const window = smoothingWindow(rows.length);
+    const leftSeries = [{ data: movingAverage(rows.map((r) => [r.ts, r.cpu_temp]), window) }];
     if (hostHasFan(state.activeHost)) {
       leftSeries.push({ data: rows.map((r) => [r.ts, r.fan_rpm]) });
     }
     chartLeft.setOption({ series: leftSeries });
     chartRight.setOption({
       series: [
-        { data: rows.map((r) => [r.ts, r.nvme_composite_temp]) },
+        { data: movingAverage(rows.map((r) => [r.ts, r.nvme_composite_temp]), window) },
       ],
     });
   }
