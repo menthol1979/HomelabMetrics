@@ -18,9 +18,11 @@
     backupEvents: [],
   };
 
-  const chartEl = document.getElementById("chart");
-  const chart = echarts.init(chartEl, null, { renderer: "canvas" });
-  window.addEventListener("resize", () => chart.resize());
+  const chartLeftEl = document.getElementById("chart-left");
+  const chartRightEl = document.getElementById("chart-right");
+  const chartLeft = echarts.init(chartLeftEl, null, { renderer: "canvas" });
+  const chartRight = echarts.init(chartRightEl, null, { renderer: "canvas" });
+  window.addEventListener("resize", () => { chartLeft.resize(); chartRight.resize(); });
 
   function fmtTemp(v) {
     return v === null || v === undefined ? "—" : `${v.toFixed(1)}°C`;
@@ -63,9 +65,9 @@
       card.innerHTML = `
         <div class="card-head">
           <div class="name"><span class="swatch"></span>${h.display_name}<span class="stale-badge">STALE</span></div>
-          <div class="hero na" data-f="nvme_composite_temp"><span class="v">—</span><span class="unit">°C NVMe</span></div>
+          <div class="hero na" data-f="cpu_temp"><span class="v">—</span><span class="unit">°C CPU</span></div>
         </div>
-        <div class="metric-row"><span class="label">CPU temp</span><span class="value na" data-f="cpu_temp">—</span></div>
+        <div class="metric-row"><span class="label">NVMe composite</span><span class="value na" data-f="nvme_composite_temp">—</span></div>
         <div class="metric-row"><span class="label">NVMe sensor 1 / 2</span><span class="value na" data-f="nvme_sensors">—</span></div>
         <div class="metric-row"><span class="label">Wear (percentage used)</span><span class="value na" data-f="nvme_percentage_used">—</span></div>
         <div class="metric-row"><span class="label">Critical warning</span><span class="value na" data-f="nvme_critical_warning">—</span></div>
@@ -90,15 +92,15 @@
       el.className = `value ${cls}`;
     };
 
-    const heroCls = classifyTemp(m.nvme_composite_temp, m.nvme_composite_warn, m.nvme_composite_crit, "nvme_composite_temp");
-    const hero = card.querySelector('[data-f="nvme_composite_temp"]');
+    const heroCls = classifyTemp(m.cpu_temp, m.cpu_temp_warn, m.cpu_temp_crit, "cpu_temp");
+    const hero = card.querySelector('[data-f="cpu_temp"]');
     if (hero) {
       hero.className = `hero ${heroCls}`;
-      hero.querySelector(".v").textContent = m.nvme_composite_temp === null || m.nvme_composite_temp === undefined
-        ? "—" : m.nvme_composite_temp.toFixed(1);
+      hero.querySelector(".v").textContent = m.cpu_temp === null || m.cpu_temp === undefined
+        ? "—" : m.cpu_temp.toFixed(1);
     }
 
-    set("cpu_temp", fmtTemp(m.cpu_temp), classifyTemp(m.cpu_temp, m.cpu_temp_warn, m.cpu_temp_crit, "cpu_temp"));
+    set("nvme_composite_temp", fmtTemp(m.nvme_composite_temp), classifyTemp(m.nvme_composite_temp, m.nvme_composite_warn, m.nvme_composite_crit, "nvme_composite_temp"));
     set("nvme_sensors", `${fmtTemp(m.nvme_sensor1_temp)} / ${fmtTemp(m.nvme_sensor2_temp)}`, "na");
     set("nvme_percentage_used", fmtPct(m.nvme_percentage_used), m.nvme_percentage_used > 20 ? "warn" : "ok");
     set("nvme_critical_warning",
@@ -190,7 +192,7 @@
 
   function glowSeries(name, color, data, extra) {
     return {
-      name, type: "line", data, showSymbol: false, smooth: 0.25,
+      name, type: "line", data, showSymbol: false, smooth: 0.55, smoothMonotone: "x", sampling: "lttb",
       animationDuration: 400, animationDurationUpdate: 300,
       lineStyle: { color, width: 2.4, shadowColor: color, shadowBlur: 12 },
       itemStyle: { color },
@@ -210,18 +212,25 @@
     buildChartOption(rows);
   }
 
-  function buildChartOption(rows) {
-    const latestThresholds = rows.length ? rows[rows.length - 1] : {};
+  const AXIS_COMMON = {
+    axisLine: { lineStyle: { color: "#1e2740" } },
+    axisLabel: { color: "#8794ab" },
+    splitLine: { lineStyle: { color: "#161d2e" } },
+  };
+
+  function hostHasFan(hostKey) {
+    return !!state.hosts.find((h) => h.key === hostKey)?.has_fan;
+  }
+
+  function buildLeftOption(rows, rangeStartMs, latestThresholds) {
+    const hasFan = hostHasFan(state.activeHost);
     const cpuData = rows.map((r) => [r.ts, r.cpu_temp]);
-    const nvmeData = rows.map((r) => [r.ts, r.nvme_composite_temp]);
-    const rangeStartMs = Date.now() - state.activeRangeHours * 3600 * 1000;
 
     const cpuWarn = latestThresholds.cpu_temp_warn ?? DEFAULT_THRESHOLDS.cpu_temp.warn;
     const cpuCrit = latestThresholds.cpu_temp_crit ?? DEFAULT_THRESHOLDS.cpu_temp.crit;
-    const nvmeWarn = latestThresholds.nvme_composite_warn ?? DEFAULT_THRESHOLDS.nvme_composite_temp.warn;
-    const nvmeCrit = latestThresholds.nvme_composite_crit ?? DEFAULT_THRESHOLDS.nvme_composite_temp.crit;
 
     const cpuSeries = glowSeries("CPU temp", "#4fd1ff", cpuData, {
+      yAxisIndex: 0,
       markLine: {
         symbol: "none", label: { formatter: "{b}", color: "#8794ab" },
         lineStyle: { type: "dashed" },
@@ -232,6 +241,33 @@
       },
       markArea: { data: backupMarkAreas(state.activeHost, rangeStartMs) },
     });
+
+    const series = [cpuSeries];
+    const yAxis = [{ type: "value", name: "°C", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON }];
+
+    if (hasFan) {
+      const fanData = rows.map((r) => [r.ts, r.fan_rpm]);
+      series.push(glowSeries("Fan speed", "#3ee08a", fanData, { yAxisIndex: 1, areaStyle: null }));
+      yAxis.push({ type: "value", name: "RPM", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON, splitLine: { show: false } });
+    }
+
+    return {
+      backgroundColor: "transparent",
+      textStyle: { color: "#e6ebf5" },
+      grid: { left: 50, right: hasFan ? 50 : 24, top: 30, bottom: 40 },
+      tooltip: { trigger: "axis", backgroundColor: "#111726", borderColor: "#1e2740", textStyle: { color: "#e6ebf5" } },
+      legend: { top: 0, textStyle: { color: "#8794ab" } },
+      xAxis: { type: "time", axisLine: { lineStyle: { color: "#1e2740" } }, axisLabel: { color: "#8794ab" } },
+      yAxis,
+      series,
+    };
+  }
+
+  function buildRightOption(rows, latestThresholds) {
+    const nvmeData = rows.map((r) => [r.ts, r.nvme_composite_temp]);
+
+    const nvmeWarn = latestThresholds.nvme_composite_warn ?? DEFAULT_THRESHOLDS.nvme_composite_temp.warn;
+    const nvmeCrit = latestThresholds.nvme_composite_crit ?? DEFAULT_THRESHOLDS.nvme_composite_temp.crit;
 
     const nvmeSeries = glowSeries("NVMe composite", "#ff9f5c", nvmeData, {
       markLine: {
@@ -244,20 +280,24 @@
       },
     });
 
-    chart.setOption({
+    return {
       backgroundColor: "transparent",
       textStyle: { color: "#e6ebf5" },
       grid: { left: 50, right: 24, top: 30, bottom: 40 },
       tooltip: { trigger: "axis", backgroundColor: "#111726", borderColor: "#1e2740", textStyle: { color: "#e6ebf5" } },
       legend: { top: 0, textStyle: { color: "#8794ab" } },
       xAxis: { type: "time", axisLine: { lineStyle: { color: "#1e2740" } }, axisLabel: { color: "#8794ab" } },
-      yAxis: {
-        type: "value", name: "°C", nameTextStyle: { color: "#8794ab" },
-        axisLine: { lineStyle: { color: "#1e2740" } }, axisLabel: { color: "#8794ab" },
-        splitLine: { lineStyle: { color: "#161d2e" } },
-      },
-      series: [cpuSeries, nvmeSeries],
-    });
+      yAxis: { type: "value", name: "°C", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON },
+      series: [nvmeSeries],
+    };
+  }
+
+  function buildChartOption(rows) {
+    const latestThresholds = rows.length ? rows[rows.length - 1] : {};
+    const rangeStartMs = Date.now() - state.activeRangeHours * 3600 * 1000;
+
+    chartLeft.setOption(buildLeftOption(rows, rangeStartMs, latestThresholds), true);
+    chartRight.setOption(buildRightOption(rows, latestThresholds), true);
   }
 
   function appendLiveToChart(m) {
@@ -268,9 +308,13 @@
     rows.push(m);
     const cutoff = Date.now() - state.activeRangeHours * 3600 * 1000;
     while (rows.length && new Date(rows[0].ts).getTime() < cutoff) rows.shift();
-    chart.setOption({
+    const leftSeries = [{ data: rows.map((r) => [r.ts, r.cpu_temp]) }];
+    if (hostHasFan(state.activeHost)) {
+      leftSeries.push({ data: rows.map((r) => [r.ts, r.fan_rpm]) });
+    }
+    chartLeft.setOption({ series: leftSeries });
+    chartRight.setOption({
       series: [
-        { data: rows.map((r) => [r.ts, r.cpu_temp]) },
         { data: rows.map((r) => [r.ts, r.nvme_composite_temp]) },
       ],
     });

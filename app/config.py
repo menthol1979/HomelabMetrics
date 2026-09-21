@@ -28,6 +28,9 @@ HOSTS = {
         "port": 61208,
         "cpu_temp_label": "Package id 0",
         "is_backup_host": False,
+        # Dell OptiPlex 3060 Micro - no PWM fan sensor exposed via
+        # Glances/lm-sensors on Linux (see FAN_LABEL below).
+        "has_fan": False,
     },
     "argos": {
         "display_name": "Argos",
@@ -35,6 +38,7 @@ HOSTS = {
         "port": 61208,
         "cpu_temp_label": "cpu_thermal 0",
         "is_backup_host": True,
+        "has_fan": True,
     },
     "selene": {
         "display_name": "Selene",
@@ -42,6 +46,7 @@ HOSTS = {
         "port": 61208,
         "cpu_temp_label": "cpu_thermal 0",
         "is_backup_host": False,
+        "has_fan": True,
     },
 }
 
