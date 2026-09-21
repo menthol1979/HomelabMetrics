@@ -264,7 +264,7 @@
     const cpuSeries = glowSeries("CPU temp", "#4fd1ff", cpuData, {
       yAxisIndex: 0,
       markLine: {
-        symbol: "none", label: { formatter: "{b}", color: "#8794ab", position: "start", align: "left", distance: 4 },
+        symbol: "none", label: { formatter: "{b} {c}°", color: "#8794ab", position: "insideStartTop", distance: 4 },
         lineStyle: { type: "dashed" },
         data: [
           { yAxis: cpuWarn, lineStyle: { color: "#ffb545" }, name: "Warn" },
@@ -280,7 +280,11 @@
     if (hasFan) {
       const fanData = rows.map((r) => [r.ts, r.fan_rpm]);
       series.push(glowSeries("Fan speed", "#3ee08a", fanData, { yAxisIndex: 1, areaStyle: null }));
-      yAxis.push({ type: "value", name: "RPM", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON, ...FAN_AXIS_RANGE, splitLine: { show: false } });
+      yAxis.push({
+        type: "value", name: "RPM", nameTextStyle: { color: "#8794ab" },
+        ...AXIS_COMMON, ...FAN_AXIS_RANGE, splitLine: { show: false },
+        axisLabel: { color: "#8794ab", formatter: (v) => (v >= 1000 ? `${v / 1000}K` : `${v}`) },
+      });
     }
 
     return {
@@ -303,7 +307,7 @@
 
     const nvmeSeries = glowSeries("NVMe composite", "#ff9f5c", nvmeData, {
       markLine: {
-        symbol: "none", label: { formatter: "{b}", color: "#8794ab", position: "start", align: "left", distance: 4 },
+        symbol: "none", label: { formatter: "{b} {c}°", color: "#8794ab", position: "insideStartTop", distance: 4 },
         lineStyle: { type: "dashed" },
         data: [
           { yAxis: nvmeWarn, lineStyle: { color: "#ffb545" }, name: "Warn" },
