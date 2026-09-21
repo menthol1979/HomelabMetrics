@@ -11,7 +11,8 @@
     hosts: [],                 // [{key, display_name, is_backup_host}]
     latest: {},                // host -> most recent metric dict
     lastSeenAt: {},            // host -> Date.now() of last metric (for staleness)
-    lastMessageAt: null,       // Date.now() of the most recent WS message, any host
+    lastMessageAt: null,       // Date.now() of the most recent WS message, any host (fast tier, ~3s)
+    lastSlowUpdateAt: null,    // Date.now() of the most recent slow-tier refresh, any host (~60s)
     activeHost: null,
     activeRangeHours: 24,
     seriesCache: {},           // `${host}:${rangeHours}` -> [metric,...] ascending by ts
@@ -128,13 +129,19 @@
   }
   setInterval(stalenessSweep, 15000);
 
-  // ---------- "Updated: Xs ago" ticker ----------
+  // ---------- "Fast: Xs ago · Slow: Ys ago" ticker ----------
 
   const updatedAgoEl = document.getElementById("updated-ago");
   function updateAgoText() {
-    if (!updatedAgoEl || state.lastMessageAt === null) return;
-    const secs = Math.max(0, Math.round((Date.now() - state.lastMessageAt) / 1000));
-    updatedAgoEl.textContent = `Updated: ${secs}s ago`;
+    if (!updatedAgoEl) return;
+    const parts = [];
+    if (state.lastMessageAt !== null) {
+      parts.push(`Fast: ${Math.max(0, Math.round((Date.now() - state.lastMessageAt) / 1000))}s ago`);
+    }
+    if (state.lastSlowUpdateAt !== null) {
+      parts.push(`Slow: ${Math.max(0, Math.round((Date.now() - state.lastSlowUpdateAt) / 1000))}s ago`);
+    }
+    updatedAgoEl.textContent = parts.join(" · ");
   }
   setInterval(updateAgoText, 1000);
 
@@ -264,11 +271,14 @@
     const cpuSeries = glowSeries("CPU temp", "#4fd1ff", cpuData, {
       yAxisIndex: 0,
       markLine: {
-        symbol: "none", label: { formatter: "{b} {c}°", color: "#8794ab", position: "insideStartTop", distance: 4 },
+        symbol: "none", label: { formatter: "{b} {c}°", color: "#8794ab", distance: 4 },
         lineStyle: { type: "dashed" },
         data: [
-          { yAxis: cpuWarn, lineStyle: { color: "#ffb545" }, name: "Warn" },
-          { yAxis: cpuCrit, lineStyle: { color: "#ff4d6d" }, name: "Crit" },
+          // crit sits above warn on the axis - push crit's label further up and
+          // warn's label down so they can't collide even when the two
+          // thresholds are only a few degrees apart.
+          { yAxis: cpuWarn, lineStyle: { color: "#ffb545" }, name: "Warn", label: { position: "insideStartBottom" } },
+          { yAxis: cpuCrit, lineStyle: { color: "#ff4d6d" }, name: "Crit", label: { position: "insideStartTop" } },
         ],
       },
       markArea: { data: backupMarkAreas(state.activeHost, rangeStartMs) },
@@ -291,7 +301,10 @@
       backgroundColor: "transparent",
       textStyle: { color: "#e6ebf5" },
       grid: { left: 50, right: hasFan ? 50 : 24, top: 30, bottom: 40 },
-      tooltip: { trigger: "axis", backgroundColor: "#111726", borderColor: "#1e2740", textStyle: { color: "#e6ebf5" } },
+      tooltip: {
+        trigger: "axis", backgroundColor: "#111726", borderColor: "#1e2740", textStyle: { color: "#e6ebf5" },
+        valueFormatter: (v) => (v === null || v === undefined ? "—" : Number.isInteger(v) ? String(v) : v.toFixed(2)),
+      },
       legend: { top: 0, textStyle: { color: "#8794ab" } },
       xAxis: { type: "time", axisLine: { lineStyle: { color: "#1e2740" } }, axisLabel: { color: "#8794ab" } },
       yAxis,
@@ -307,11 +320,11 @@
 
     const nvmeSeries = glowSeries("NVMe composite", "#ff9f5c", nvmeData, {
       markLine: {
-        symbol: "none", label: { formatter: "{b} {c}°", color: "#8794ab", position: "insideStartTop", distance: 4 },
+        symbol: "none", label: { formatter: "{b} {c}°", color: "#8794ab", distance: 4 },
         lineStyle: { type: "dashed" },
         data: [
-          { yAxis: nvmeWarn, lineStyle: { color: "#ffb545" }, name: "Warn" },
-          { yAxis: nvmeCrit, lineStyle: { color: "#ff4d6d" }, name: "Crit" },
+          { yAxis: nvmeWarn, lineStyle: { color: "#ffb545" }, name: "Warn", label: { position: "insideStartBottom" } },
+          { yAxis: nvmeCrit, lineStyle: { color: "#ff4d6d" }, name: "Crit", label: { position: "insideStartTop" } },
         ],
       },
     });
@@ -320,7 +333,10 @@
       backgroundColor: "transparent",
       textStyle: { color: "#e6ebf5" },
       grid: { left: 50, right: 24, top: 30, bottom: 40 },
-      tooltip: { trigger: "axis", backgroundColor: "#111726", borderColor: "#1e2740", textStyle: { color: "#e6ebf5" } },
+      tooltip: {
+        trigger: "axis", backgroundColor: "#111726", borderColor: "#1e2740", textStyle: { color: "#e6ebf5" },
+        valueFormatter: (v) => (v === null || v === undefined ? "—" : Number.isInteger(v) ? String(v) : v.toFixed(2)),
+      },
       legend: { top: 0, textStyle: { color: "#8794ab" } },
       xAxis: { type: "time", axisLine: { lineStyle: { color: "#1e2740" } }, axisLabel: { color: "#8794ab" } },
       yAxis: { type: "value", name: "°C", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON, ...TEMP_AXIS_RANGE },
@@ -403,6 +419,12 @@
       const m = msg.data;
       state.latest[m.host] = m;
       state.lastMessageAt = Date.now();
+      if (m.slow_updated_at) {
+        const slowMs = new Date(m.slow_updated_at).getTime();
+        if (state.lastSlowUpdateAt === null || slowMs > state.lastSlowUpdateAt) {
+          state.lastSlowUpdateAt = slowMs;
+        }
+      }
       updateAgoText();
       updateHostCard(m);
       appendLiveToChart(m);

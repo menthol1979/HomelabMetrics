@@ -51,9 +51,17 @@ class SlowFieldsCache:
         self._cache: dict[str, dict] = {
             host_key: {field: None for field in SLOW_FIELDS} for host_key in config.HOSTS
         }
+        # When each host's slow tier last actually refreshed - distinct
+        # from the fast tier's per-tick timestamp, so the UI can show
+        # both cadences instead of implying everything is 3s-fresh.
+        self._updated_at: dict[str, str | None] = {host_key: None for host_key in config.HOSTS}
 
     def update(self, host_key: str, fields: dict) -> None:
         self._cache[host_key].update({k: fields.get(k) for k in SLOW_FIELDS})
+        self._updated_at[host_key] = _now_iso()
+
+    def updated_at(self, host_key: str) -> str | None:
+        return self._updated_at[host_key]
 
     def get(self, host_key: str) -> dict:
         return dict(self._cache[host_key])
@@ -139,6 +147,10 @@ async def run_fast_loop(cache: SlowFieldsCache, broadcast_fn, stop_event: asynci
                     **cache.get(host_key),
                 }
                 metric["in_backup_window"] = 1 if (host_key == backup_host_key and tracker.active) else 0
+                # Not a DB column - db.insert_metric() ignores extra dict
+                # keys - just carried over the WebSocket so the frontend
+                # can show slow-tier freshness separately from fast-tier.
+                metric["slow_updated_at"] = cache.updated_at(host_key)
 
                 if host_key == backup_host_key and tracker.active:
                     tracker.observe(metric)
