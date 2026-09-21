@@ -213,11 +213,18 @@
   }
 
   const AXIS_COMMON = {
-    scale: true,
     axisLine: { lineStyle: { color: "#1e2740" } },
     axisLabel: { color: "#8794ab" },
     splitLine: { lineStyle: { color: "#161d2e" } },
   };
+
+  // Fixed (not auto-scaled) ranges for the trend charts. A dynamically
+  // tightened axis makes ordinary 1-2C sensor wobble look like a dramatic
+  // swing; a fixed range stays visually honest about how close a reading
+  // actually is to dangerous territory (the Sep 2026 NVMe incident hit
+  // 93C - comfortably inside this range with headroom to spare).
+  const TEMP_AXIS_RANGE = { min: 20, max: 100 };
+  const FAN_AXIS_RANGE = { min: 0, max: 8000 };
 
   function hostHasFan(hostKey) {
     return !!state.hosts.find((h) => h.key === hostKey)?.has_fan;
@@ -268,12 +275,12 @@
     });
 
     const series = [cpuSeries];
-    const yAxis = [{ type: "value", name: "°C", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON }];
+    const yAxis = [{ type: "value", name: "°C", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON, ...TEMP_AXIS_RANGE }];
 
     if (hasFan) {
       const fanData = rows.map((r) => [r.ts, r.fan_rpm]);
       series.push(glowSeries("Fan speed", "#3ee08a", fanData, { yAxisIndex: 1, areaStyle: null }));
-      yAxis.push({ type: "value", name: "RPM", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON, splitLine: { show: false } });
+      yAxis.push({ type: "value", name: "RPM", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON, ...FAN_AXIS_RANGE, splitLine: { show: false } });
     }
 
     return {
@@ -312,7 +319,7 @@
       tooltip: { trigger: "axis", backgroundColor: "#111726", borderColor: "#1e2740", textStyle: { color: "#e6ebf5" } },
       legend: { top: 0, textStyle: { color: "#8794ab" } },
       xAxis: { type: "time", axisLine: { lineStyle: { color: "#1e2740" } }, axisLabel: { color: "#8794ab" } },
-      yAxis: { type: "value", name: "°C", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON },
+      yAxis: { type: "value", name: "°C", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON, ...TEMP_AXIS_RANGE },
       series: [nvmeSeries],
     };
   }
