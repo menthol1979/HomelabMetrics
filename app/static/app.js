@@ -264,11 +264,11 @@
     const cpuSeries = glowSeries("CPU temp", "#4fd1ff", cpuData, {
       yAxisIndex: 0,
       markLine: {
-        symbol: "none", label: { formatter: "{b}: {c}°C", color: "#8794ab" },
+        symbol: "none", label: { formatter: "{b}", color: "#8794ab", position: "start", align: "left", distance: 4 },
         lineStyle: { type: "dashed" },
         data: [
-          { yAxis: cpuWarn, lineStyle: { color: "#ffb545" }, name: "CPU warn" },
-          { yAxis: cpuCrit, lineStyle: { color: "#ff4d6d" }, name: "CPU crit" },
+          { yAxis: cpuWarn, lineStyle: { color: "#ffb545" }, name: "Warn" },
+          { yAxis: cpuCrit, lineStyle: { color: "#ff4d6d" }, name: "Crit" },
         ],
       },
       markArea: { data: backupMarkAreas(state.activeHost, rangeStartMs) },
@@ -286,7 +286,7 @@
     return {
       backgroundColor: "transparent",
       textStyle: { color: "#e6ebf5" },
-      grid: { left: 50, right: hasFan ? 130 : 100, top: 30, bottom: 40 },
+      grid: { left: 50, right: hasFan ? 50 : 24, top: 30, bottom: 40 },
       tooltip: { trigger: "axis", backgroundColor: "#111726", borderColor: "#1e2740", textStyle: { color: "#e6ebf5" } },
       legend: { top: 0, textStyle: { color: "#8794ab" } },
       xAxis: { type: "time", axisLine: { lineStyle: { color: "#1e2740" } }, axisLabel: { color: "#8794ab" } },
@@ -303,11 +303,11 @@
 
     const nvmeSeries = glowSeries("NVMe composite", "#ff9f5c", nvmeData, {
       markLine: {
-        symbol: "none", label: { formatter: "{b}: {c}°C", color: "#8794ab" },
+        symbol: "none", label: { formatter: "{b}", color: "#8794ab", position: "start", align: "left", distance: 4 },
         lineStyle: { type: "dashed" },
         data: [
-          { yAxis: nvmeWarn, lineStyle: { color: "#ffb545" }, name: "NVMe warn" },
-          { yAxis: nvmeCrit, lineStyle: { color: "#ff4d6d" }, name: "NVMe crit" },
+          { yAxis: nvmeWarn, lineStyle: { color: "#ffb545" }, name: "Warn" },
+          { yAxis: nvmeCrit, lineStyle: { color: "#ff4d6d" }, name: "Crit" },
         ],
       },
     });
@@ -315,7 +315,7 @@
     return {
       backgroundColor: "transparent",
       textStyle: { color: "#e6ebf5" },
-      grid: { left: 50, right: 100, top: 30, bottom: 40 },
+      grid: { left: 50, right: 24, top: 30, bottom: 40 },
       tooltip: { trigger: "axis", backgroundColor: "#111726", borderColor: "#1e2740", textStyle: { color: "#e6ebf5" } },
       legend: { top: 0, textStyle: { color: "#8794ab" } },
       xAxis: { type: "time", axisLine: { lineStyle: { color: "#1e2740" } }, axisLabel: { color: "#8794ab" } },
