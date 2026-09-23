@@ -244,7 +244,12 @@ section.panel .sub { color: var(--text-dim); font-size: 12px; margin-bottom: 14p
   transition: background 0.15s, color 0.15s;
 }
 .tabs button:hover { color: var(--text); }
-.tabs button.active {
+#host-tabs button.active {
+  color: #06101c;
+  background: linear-gradient(135deg, var(--accent), #1d9fd6);
+  font-weight: 600;
+}
+#range-tabs button.active {
   color: #06170f;
   background: linear-gradient(135deg, var(--ok), #29b876);
   font-weight: 600;
