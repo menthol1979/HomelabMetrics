@@ -115,7 +115,6 @@ def finish_backup_event(event_id: int, end_ts: str, duration_seconds: float,
 
 
 def get_recent_metrics(host: str | None = None, since_ts: str | None = None, limit: int = 2000) -> list[dict]:
-    query = "SELECT * FROM metrics"
     clauses, params = [], []
     if host:
         clauses.append("host = ?")
@@ -123,14 +122,44 @@ def get_recent_metrics(host: str | None = None, since_ts: str | None = None, lim
     if since_ts:
         clauses.append("ts >= ?")
         params.append(since_ts)
-    if clauses:
-        query += " WHERE " + " AND ".join(clauses)
-    query += " ORDER BY ts DESC LIMIT ?"
-    params.append(limit)
+    where_sql = (" WHERE " + " AND ".join(clauses)) if clauses else ""
 
     with _connect() as conn:
-        rows = conn.execute(query, params).fetchall()
-    return [dict(row) for row in rows]
+        total = conn.execute(f"SELECT COUNT(*) FROM metrics{where_sql}", params).fetchone()[0]
+
+        if total <= limit:
+            rows = conn.execute(f"SELECT * FROM metrics{where_sql} ORDER BY ts ASC", params).fetchall()
+            return [dict(row) for row in rows]
+
+        # More rows in the requested window than the cap - evenly downsample
+        # across the FULL span instead of the old "ORDER BY ts DESC LIMIT"
+        # behaviour, which silently truncated to just the most recent slice
+        # (e.g. a 7d/30d request looked identical to a much shorter one,
+        # since 3s-cadence data blows past a few-thousand-row cap in well
+        # under a day).
+        stride = -(-total // limit)  # ceil division
+        rows = conn.execute(
+            f"""
+            WITH filtered AS (
+                SELECT *, ROW_NUMBER() OVER (ORDER BY ts ASC) AS rn
+                FROM metrics{where_sql}
+            )
+            SELECT * FROM filtered WHERE (rn - 1) % ? = 0 ORDER BY ts ASC
+            """,
+            [*params, stride],
+        ).fetchall()
+        return [{k: v for k, v in dict(row).items() if k != "rn"} for row in rows]
+
+
+def get_latest_metric(host: str) -> dict | None:
+    """Single most-recent row for a host - used to prime the UI at page
+    load, distinct from get_recent_metrics()'s historical-series intent
+    (which now always returns ascending, downsampled if needed)."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM metrics WHERE host = ? ORDER BY ts DESC LIMIT 1", (host,)
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def get_backup_events(host: str | None = None, limit: int = 200) -> list[dict]:

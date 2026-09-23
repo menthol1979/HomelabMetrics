@@ -22,12 +22,14 @@
   <section class="panel">
     <h2>Temperature trend</h2>
     <div class="sub">CPU temp + fan speed on the left, NVMe composite temperature on the right, with each host's own lm-sensors warning/critical lines. Shaded bands mark detected backup windows.</div>
-    <div class="tabs" id="host-tabs"></div>
-    <div class="tabs" id="range-tabs">
-      <button data-range="6">6h</button>
-      <button data-range="24" class="active">24h</button>
-      <button data-range="168">7d</button>
-      <button data-range="720">30d</button>
+    <div class="tabs-row">
+      <div class="tabs" id="host-tabs"></div>
+      <div class="tabs" id="range-tabs">
+        <button data-range="6">6h</button>
+        <button data-range="24" class="active">24h</button>
+        <button data-range="168">7d</button>
+        <button data-range="720">30d</button>
+      </div>
     </div>
     <div class="chart-row">
       <div id="chart-left" class="chart-half"></div>

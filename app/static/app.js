@@ -175,8 +175,10 @@
   async function loadSeries(host, rangeHours) {
     const cacheKey = `${host}:${rangeHours}`;
     const since = new Date(Date.now() - rangeHours * 3600 * 1000).toISOString();
+    // The backend now always returns ascending order, downsampling evenly
+    // across the full requested span if there's more data than the cap
+    // (rather than truncating to just the most recent slice).
     const rows = await fetchJSON(`/api/metrics?host=${encodeURIComponent(host)}&since=${encodeURIComponent(since)}&limit=8000`);
-    rows.reverse(); // API returns newest-first; chart wants ascending
     state.seriesCache[cacheKey] = rows;
     return rows;
   }
@@ -450,8 +452,8 @@
     renderHostTabs();
 
     for (const h of state.hosts) {
-      const rows = await fetchJSON(`/api/metrics?host=${encodeURIComponent(h.key)}&limit=1`);
-      if (rows.length) updateHostCard(rows[0]);
+      const row = await fetchJSON(`/api/metrics/latest?host=${encodeURIComponent(h.key)}`);
+      if (row) updateHostCard(row);
     }
 
     await refreshBackupEvents();

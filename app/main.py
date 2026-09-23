@@ -4,13 +4,14 @@ and pushes each live poll to connected browsers over a WebSocket.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db, poller
@@ -19,6 +20,22 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("homelab_metrics.main")
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _compute_asset_version() -> str:
+    """Content hash of the frontend files that actually change between
+    deploys. Used as a cache-busting ?v= query param on index.html's
+    <script>/<link> tags so a rebuild always serves fresh JS/CSS instead
+    of whatever the browser cached from before - this is what silently
+    bit us more than once: Portainer/the browser reporting a successful
+    "update" while still running the previous app.js underneath."""
+    h = hashlib.sha256()
+    for name in ("app.js", "style.css"):
+        h.update((STATIC_DIR / name).read_bytes())
+    return h.hexdigest()[:10]
+
+
+ASSET_VERSION = _compute_asset_version()
 
 
 class Broadcaster:
@@ -109,6 +126,11 @@ async def get_metrics(host: str | None = None, since: str | None = None, limit: 
     return db.get_recent_metrics(host=host, since_ts=since, limit=limit)
 
 
+@app.get("/api/metrics/latest")
+async def get_latest_metric(host: str):
+    return db.get_latest_metric(host)
+
+
 @app.get("/api/backup-events")
 async def get_backup_events(host: str | None = None, limit: int = 200):
     return db.get_backup_events(host=host, limit=limit)
@@ -134,4 +156,10 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/")
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    html = (STATIC_DIR / "index.html").read_text()
+    html = html.replace('href="/static/style.css"', f'href="/static/style.css?v={ASSET_VERSION}"')
+    html = html.replace('src="/static/app.js"', f'src="/static/app.js?v={ASSET_VERSION}"')
+    # The HTML shell itself must never be cached, or the browser can keep
+    # serving an old version's ?v= links forever and never notice a
+    # rebuild happened at all.
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})

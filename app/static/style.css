@@ -212,6 +212,16 @@ section.panel h2 {
 }
 section.panel .sub { color: var(--text-dim); font-size: 12px; margin-bottom: 14px; }
 
+.tabs-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.tabs-row .tabs { margin-bottom: 0; }
+
 .tabs {
   display: flex;
   gap: 4px;
