@@ -11,6 +11,15 @@ services:
     build: .
     container_name: homelab-metrics
     restart: unless-stopped
+    environment:
+      # Shared secret raspibackup.service presents as a bearer token to
+      # POST /api/backup-events/{start,finish} - set BACKUP_EVENT_TOKEN
+      # in Portainer's stack environment variables (Stacks > this stack
+      # > Editor > Environment variables), not hardcoded here. Generate
+      # one the same way the existing Gatus token was made, e.g.
+      # `openssl rand -hex 16` - use a different value than the Gatus
+      # one, since that's a separate service's secret.
+      - BACKUP_EVENT_TOKEN=${BACKUP_EVENT_TOKEN}
     ports:
       - "8098:8000"
     volumes:

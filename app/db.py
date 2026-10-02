@@ -99,6 +99,30 @@ def start_backup_event(host: str, start_ts: str) -> int:
         return cur.lastrowid
 
 
+def get_backup_event(event_id: int) -> dict | None:
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM backup_events WHERE id = ?", (event_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_peak_temps_in_window(host: str, start_ts: str, end_ts: str) -> tuple[float | None, float | None]:
+    """Ground-truth peak CPU/NVMe-composite temps for host across
+    [start_ts, end_ts], read back from the metrics rows the fast loop
+    already wrote during that window - rather than tracked live tick by
+    tick while the backup ran. A slow or dropped tick just means one
+    fewer sample in this query, never a missed event."""
+    with _connect() as conn:
+        row = conn.execute(
+            """
+            SELECT MAX(cpu_temp) AS peak_cpu, MAX(nvme_composite_temp) AS peak_nvme
+            FROM metrics
+            WHERE host = ? AND ts BETWEEN ? AND ?
+            """,
+            (host, start_ts, end_ts),
+        ).fetchone()
+    return (row["peak_cpu"], row["peak_nvme"]) if row else (None, None)
+
+
 def finish_backup_event(event_id: int, end_ts: str, duration_seconds: float,
                          peak_nvme_temp: float | None, peak_cpu_temp: float | None,
                          status: str = "completed") -> None:

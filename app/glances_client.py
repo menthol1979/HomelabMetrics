@@ -8,8 +8,9 @@ fetched here any more - those come from HomeLab-Pi5's web mirror at the
 fast tier instead (see mirror_client.py and config.py's docstring), so
 this client only needs to run at config.SLOW_POLL_INTERVAL.
 
-is_backup_running() is still used every fast-tier tick (Argos only), so
-it stays independent of the slow/fast split.
+This client no longer does any backup detection - see config.py's
+module docstring for why that moved to a push-based webhook instead of
+a Glances processlist check.
 """
 
 import logging
@@ -49,22 +50,6 @@ class GlancesClient:
             **self._parse_sensors(sensors),
             **self._parse_smart(smart),
         }
-
-    async def is_backup_running(self, client: httpx.AsyncClient) -> bool:
-        """Only meaningful for hosts with is_backup_host=True."""
-        try:
-            procs = await self._get(client, "processlist")
-        except (httpx.HTTPError, ValueError) as exc:
-            logger.warning("processlist poll failed for host=%s: %s", self.host_key, exc)
-            return False
-
-        for proc in procs:
-            name = (proc.get("name") or "").lower()
-            cmdline = " ".join(proc.get("cmdline") or []).lower()
-            haystack = name + " " + cmdline
-            if any(marker.lower() in haystack for marker in config.BACKUP_PROCESS_MARKERS):
-                return True
-        return False
 
     def _parse_sensors(self, sensors: list[dict[str, Any]]) -> dict[str, Any]:
         by_label = {entry.get("label"): entry for entry in sensors if isinstance(entry, dict)}

@@ -4,17 +4,18 @@ and pushes each live poll to connected browsers over a WebSocket.
 """
 
 import asyncio
+import datetime
 import hashlib
 import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, poller
+from . import backup_state, config, db, poller
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("homelab_metrics.main")
@@ -134,6 +135,65 @@ async def get_latest_metric(host: str):
 @app.get("/api/backup-events")
 async def get_backup_events(host: str | None = None, limit: int = 200):
     return db.get_backup_events(host=host, limit=limit)
+
+
+def _check_backup_event_token(authorization: str | None) -> None:
+    """Shared-secret check for the two webhook endpoints below, called
+    by raspibackup.service itself (ExecStartPre/ExecStopPost) rather
+    than polled for - see config.py's module docstring for why this
+    replaced the old Glances-processlist heuristic."""
+    if not config.BACKUP_EVENT_TOKEN:
+        raise HTTPException(500, "BACKUP_EVENT_TOKEN not configured on the server")
+    if authorization != f"Bearer {config.BACKUP_EVENT_TOKEN}":
+        raise HTTPException(401, "missing or invalid bearer token")
+
+
+@app.post("/api/backup-events/start")
+async def post_backup_event_start(payload: dict, authorization: str | None = Header(default=None)):
+    _check_backup_event_token(authorization)
+    host = payload.get("host")
+    if host not in config.HOSTS:
+        raise HTTPException(400, f"unknown host {host!r}")
+
+    start_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    event_id = db.start_backup_event(host, start_ts)
+    backup_state.active[host] = event_id
+    logger.info("backup event started: host=%s event_id=%s", host, event_id)
+    return {"event_id": event_id, "start_ts": start_ts}
+
+
+@app.post("/api/backup-events/finish")
+async def post_backup_event_finish(payload: dict, authorization: str | None = Header(default=None)):
+    _check_backup_event_token(authorization)
+    host = payload.get("host")
+    status = payload.get("status", "completed")
+    if host not in config.HOSTS:
+        raise HTTPException(400, f"unknown host {host!r}")
+
+    event_id = backup_state.active.pop(host, None)
+    if event_id is None:
+        raise HTTPException(409, f"no in-progress backup event for host {host!r}")
+
+    event = db.get_backup_event(event_id)
+    end_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    duration = (
+        datetime.datetime.fromisoformat(end_ts) - datetime.datetime.fromisoformat(event["start_ts"])
+    ).total_seconds()
+    peak_cpu, peak_nvme = db.get_peak_temps_in_window(host, event["start_ts"], end_ts)
+    db.finish_backup_event(event_id, end_ts, duration, peak_nvme, peak_cpu, status)
+
+    logger.info(
+        "backup event finished: host=%s event_id=%s status=%s duration=%.0fs peak_cpu=%s peak_nvme=%s",
+        host, event_id, status, duration, peak_cpu, peak_nvme,
+    )
+    return {
+        "event_id": event_id,
+        "end_ts": end_ts,
+        "duration_seconds": duration,
+        "peak_cpu_temp": peak_cpu,
+        "peak_nvme_temp": peak_nvme,
+        "status": status,
+    }
 
 
 @app.websocket("/ws")

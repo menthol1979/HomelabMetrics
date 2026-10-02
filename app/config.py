@@ -1,8 +1,8 @@
 """
 Static configuration for the Homelab Metrics Dashboard.
 
-Polling is split across three independent tiers to avoid duplicating
-the HomeLab-Pi5 project's own 3s Glances polling of Argos/Alcyone/Selene
+Polling is split across two independent tiers to avoid duplicating the
+HomeLab-Pi5 project's own 3s Glances polling of Argos/Alcyone/Selene
 (see that repo's config.example.h - CFG_*_GLANCES_POLL_INTERVAL_SEC):
 
   - FAST tier (MIRROR_POLL_INTERVAL): one HTTP call to HomeLab-Pi5's own
@@ -15,11 +15,23 @@ the HomeLab-Pi5 project's own 3s Glances polling of Argos/Alcyone/Selene
     warn/crit thresholds, critical_warning, media_errors,
     percentage_used). These change slowly, so 60s is plenty and this
     tier's load is negligible next to HomeLab-Pi5's continuous 3s poll.
-  - Backup detection: piggybacks on the fast tier's tick (processlist
-    check against Argos only) so a backup's start/end is caught at the
-    same ~3s resolution as the temperature readings that get compared
-    against it - nothing else in the fleet watches for this.
+
+Backup detection is push-based, not polled: raspibackup.service itself
+calls POST /api/backup-events/{start,finish} (see main.py) via
+ExecStartPre/ExecStopPost, so a backup window is ground truth from
+systemd rather than inferred. An earlier version of this guessed by
+grepping Glances' processlist for "raspiBackup"/"pigz"/"gzip" in any
+process's cmdline - that both false-positived on unrelated commands
+that merely mention the unit name (e.g. `systemctl status
+raspibackup.service`) and could silently miss the real thing, since a
+timed-out Glances call under real backup I/O load just returned False.
+Peak temps for a finished event are computed after the fact from the
+metrics rows already recorded for that host in [start_ts, end_ts] -
+see db.get_peak_temps_in_window() - rather than tracked live tick by
+tick, so there's nothing to miss even if a tick is slow or dropped.
 """
+
+import os
 
 HOSTS = {
     "alcyone": {
@@ -82,10 +94,12 @@ SMART_KEYS = {
     "nvme_media_errors": "integrityErrors",
 }
 
-# Process names/cmdline substrings that mark an in-progress raspiBackup
-# run on the backup host (Argos), checked against Glances' processlist
-# plugin - no SSH/new agent required.
-BACKUP_PROCESS_MARKERS = ["raspiBackup", "pigz", "gzip"]
+# Shared secret the POST /api/backup-events/{start,finish} webhooks
+# require as `Authorization: Bearer <token>` - set via the container's
+# environment (docker-compose.yml), matching value goes in
+# raspibackup.service's ExecStartPre/ExecStopPost curl calls. Unset
+# means those endpoints are refused outright rather than left open.
+BACKUP_EVENT_TOKEN = os.environ.get("BACKUP_EVENT_TOKEN")
 
 SLOW_POLL_INTERVAL = 60
 
