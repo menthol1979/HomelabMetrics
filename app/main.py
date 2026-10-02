@@ -148,12 +148,46 @@ def _check_backup_event_token(authorization: str | None) -> None:
         raise HTTPException(401, "missing or invalid bearer token")
 
 
+def _close_orphaned_event(host: str) -> None:
+    """Self-heal: if `host` already has an event in backup_state.active
+    when /start is called again, a previous run's /finish was never
+    received (crashed hook, double-invocation, etc.) - close that old
+    event out as 'interrupted' rather than silently losing track of it
+    (backup_state.active[host] would just get overwritten below,
+    orphaning the old DB row as 'in_progress' forever, which is exactly
+    what happened in production: calling /start twice in a row left one
+    event stuck with no end_ts and no way to finish it). Never raises -
+    this must not block the real backup from starting."""
+    stale_event_id = backup_state.active.get(host)
+    if stale_event_id is None:
+        return
+    try:
+        event = db.get_backup_event(stale_event_id)
+        if event is None or event["status"] != "in_progress":
+            return
+        end_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        duration = (
+            datetime.datetime.fromisoformat(end_ts) - datetime.datetime.fromisoformat(event["start_ts"])
+        ).total_seconds()
+        peak_cpu, peak_nvme = db.get_peak_temps_in_window(host, event["start_ts"], end_ts)
+        db.finish_backup_event(stale_event_id, end_ts, duration, peak_nvme, peak_cpu, "interrupted")
+        logger.warning(
+            "closed orphaned backup event as interrupted: host=%s event_id=%s "
+            "(a new /start arrived before this one's /finish)",
+            host, stale_event_id,
+        )
+    except Exception:
+        logger.exception("failed to close orphaned backup event for host=%s event_id=%s", host, stale_event_id)
+
+
 @app.post("/api/backup-events/start")
 async def post_backup_event_start(payload: dict, authorization: str | None = Header(default=None)):
     _check_backup_event_token(authorization)
     host = payload.get("host")
     if host not in config.HOSTS:
         raise HTTPException(400, f"unknown host {host!r}")
+
+    _close_orphaned_event(host)
 
     start_ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
     event_id = db.start_backup_event(host, start_ts)
