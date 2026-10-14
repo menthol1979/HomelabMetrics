@@ -165,40 +165,37 @@ matches the latest commit:
   denied". Leave it unchecked.
 - **Even unchecked, "Pull and redeploy" can silently recreate the
   container from a stale checkout** — Portainer reports success but
-  the app's still running old code. If that happens, fix it directly
-  on Argos:
+  the app's still running old code.
 
-  ```
-  # 1. Find the stack's compose folder (path is inside Portainer's own
-  #    container, not Argos's real filesystem):
-  docker inspect homelab-metrics --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}'
-  # -> /data/compose/<N>
+**Recommended: skip Portainer and redeploy with one command on Argos.**
+It finds the stack's folder from the running container's compose label,
+syncs a fresh checkout of `main` into it, and rebuilds under the same
+`homelab-metrics` project name so the data volume stays attached:
 
-  # 2. Translate that to Argos's real path via Portainer's own bind mount:
-  docker inspect portainer --format '{{ range .Mounts }}{{ .Destination }} -> {{ .Source }}{{ "\n" }}{{ end }}'
-  # -> /data -> /home/nickkal/docker/portainer/data
-  #    so the real folder is /home/nickkal/docker/portainer/data/compose/<N>
+```
+W=$(docker inspect homelab-metrics --format '{{ index .Config.Labels "com.docker.compose.project.working_dir" }}'); sudo test -d "$W" || { echo "compose folder not found: $W"; false; } && rm -rf /tmp/hm-fresh && git clone -q --depth 1 https://github.com/menthol1979/HomelabMetrics.git /tmp/hm-fresh && sudo rsync -a --exclude .git /tmp/hm-fresh/ "$W/" && rm -rf /tmp/hm-fresh && sudo bash -c "cd '$W' && docker compose -p homelab-metrics up -d --build" && docker ps --filter name=homelab-metrics --format '{{.Names}}  {{.Status}}'
+```
 
-  # 3. That folder has no .git of its own - get a fresh checkout and sync it in:
-  git clone https://github.com/menthol1979/HomelabMetrics.git /tmp/homelabmetrics-fresh
-  sudo rsync -a --exclude '.git' /tmp/homelabmetrics-fresh/ /home/nickkal/docker/portainer/data/compose/<N>/
-  rm -rf /tmp/homelabmetrics-fresh
+Notes on that command:
 
-  # 4. Rebuild under the SAME project name Portainer itself uses
-  #    ("homelab-metrics"), so it reattaches to the existing data volume
-  #    instead of creating a stray new one:
-  sudo docker rm -f homelab-metrics
-  sudo bash -c 'cd /home/nickkal/docker/portainer/data/compose/<N> && docker compose -p homelab-metrics up -d --build'
-  ```
+- The label currently holds Argos's real path
+  (`/home/nickkal/docker/portainer/data/compose/7`). If Portainer
+  redeploys the stack itself, the label may switch back to Portainer's
+  internal path (`/data/compose/<N>`); the command then stops with
+  "compose folder not found" instead of writing anywhere wrong. In that
+  case, prefix the path with `/home/nickkal/docker/portainer`.
+- The folder is root-only, which is why the existence check and the
+  `cd` both run under sudo.
+- The last line should print `homelab-metrics  Up ...`. The container
+  is down for only a few seconds while it's recreated.
 
-  A bare `docker compose up -d --build` from that folder *without*
-  `-p homelab-metrics` derives the project name from the folder itself
-  (e.g. `7`), which creates a parallel image/network/volume and looks
-  exactly like the metric history got wiped — it didn't, it's just
-  sitting unused under the wrong project name. `docker volume ls | grep
-  homelab` shows both if this happens; the real one is
-  `homelab-metrics_homelab_metrics_data`.
-
+- **Always keep `-p homelab-metrics`.** A bare
+  `docker compose up -d --build` from that folder derives the project
+  name from the folder itself (e.g. `7`), which creates a parallel
+  image/network/volume and looks exactly like the metric history got
+  wiped — it didn't, it's just sitting unused under the wrong project
+  name. `docker volume ls | grep homelab` shows both if this happens;
+  the real one is `homelab-metrics_homelab_metrics_data`.
 - **After any rebuild, hard-refresh the browser tab (Cmd+Shift+R).** A
   stale cached `app.js`/`index.html` pair can throw a JS error before
   the page ever opens its WebSocket, which looks exactly like being
