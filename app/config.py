@@ -16,10 +16,11 @@ HomeLab-Pi5 project's own 3s Glances polling of Argos/Alcyone/Selene
     percentage_used). These change slowly, so 60s is plenty and this
     tier's load is negligible next to HomeLab-Pi5's continuous 3s poll.
 
-Backup detection is push-based, not polled: raspibackup.service itself
-calls POST /api/backup-events/{start,finish} (see main.py) via
-ExecStartPre/ExecStopPost, so a backup window is ground truth from
-systemd rather than inferred. An earlier version of this guessed by
+Backup detection is push-based, not polled: each host's backup job
+calls POST /api/backup-events/{start,finish} (see main.py) - Argos's
+raspibackup.service via ExecStartPre/ExecStopPost, Alcyone's ReaR cron
+job via /usr/local/bin/rear-backup-wrapper.sh - so a backup window is
+ground truth from the job itself rather than inferred. An earlier version of this guessed by
 grepping Glances' processlist for "raspiBackup"/"pigz"/"gzip" in any
 process's cmdline - that both false-positived on unrelated commands
 that merely mention the unit name (e.g. `systemctl status

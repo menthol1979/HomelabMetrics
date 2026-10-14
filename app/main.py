@@ -139,9 +139,10 @@ async def get_backup_events(host: str | None = None, limit: int = 200):
 
 def _check_backup_event_token(authorization: str | None) -> None:
     """Shared-secret check for the two webhook endpoints below, called
-    by raspibackup.service itself (ExecStartPre/ExecStopPost) rather
-    than polled for - see config.py's module docstring for why this
-    replaced the old Glances-processlist heuristic."""
+    by each host's backup job (Argos's raspibackup.service, Alcyone's
+    ReaR wrapper) rather than polled for - see config.py's module
+    docstring for why this replaced the old Glances-processlist
+    heuristic."""
     if not config.BACKUP_EVENT_TOKEN:
         raise HTTPException(500, "BACKUP_EVENT_TOKEN not configured on the server")
     if authorization != f"Bearer {config.BACKUP_EVENT_TOKEN}":

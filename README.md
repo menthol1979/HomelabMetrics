@@ -1,9 +1,10 @@
 # Homelab Metrics Dashboard
 
 Always-on health logging for Alcyone, Argos, and Selene: continuous CPU/NVMe
-temperature, wear, and fan-speed tracking, with automatic detection of
-Argos's Friday 04:00 `raspiBackup` window so every backup leaves a
-retrievable trace of how hot it actually got.
+temperature, wear, and fan-speed tracking, plus a record of every weekly
+backup (Argos's Friday 04:00 `raspiBackup`, Alcyone's Wednesday 04:00
+ReaR) so each one leaves a retrievable trace of how long it took and how
+hot it actually got.
 
 Built on the same stack as [OfficeAQI](https://github.com/menthol1979/OfficeAQI):
 FastAPI + Uvicorn backend, SQLite storage, a WebSocket live feed, and a
@@ -31,12 +32,12 @@ itself. Polling is split into three pieces instead:
   the NVMe `critical_warning`/`media_errors`/`percentage_used` fields.
   These change slowly, so 60s is plenty, and this tier's load is
   negligible next to HomeLab-Pi5's continuous 3s poll.
-- **Backup detection:** piggybacks on the fast tier's tick —
-  `/api/4/processlist` on Argos only, matched against
-  `raspiBackup`/`pigz`/`gzip` — so a backup's start/end is caught at
-  the same ~3s resolution as the temperatures being compared against
-  it. Nothing else in the fleet watches for this, so it isn't a
-  duplicate of anything.
+- **Backup events (push, not polled):** each host's backup job calls
+  `POST /api/backup-events/start` before it runs and
+  `POST /api/backup-events/finish` after, with a bearer token
+  (`BACKUP_EVENT_TOKEN`). Peak CPU/NVMe temps are computed from the
+  metric rows already stored for that host between start and finish.
+  See "Backup event hooks" below for how each host is wired.
 - **Live push:** every fast-tier tick is broadcast over `/ws` to any
   open browser tab, so the dashboard updates without polling itself.
 
@@ -49,8 +50,9 @@ under the hood.
 depend on HomeLab-Pi5's `home-dash.service` (and its web-mirror thread)
 being up on Argos. If that service is down, those two fields go blank
 in this dashboard until it's back — the slow-tier fields (wear,
-critical_warning, media_errors, fan, thresholds) and backup detection
-are unaffected, since they're polled independently.
+critical_warning, media_errors, fan, thresholds) are unaffected, since
+they're polled independently. Backup events still open and close, but
+their peak temps come out empty for that window.
 
 ### Data sources, mapped
 
@@ -61,7 +63,33 @@ are unaffected, since they're polled independently.
 | NVMe Sensor 1 / Sensor 2 temps | `/api/4/sensors`, labels `Sensor 1` / `Sensor 2` (same on all three hosts) — slow tier |
 | NVMe critical-warning flag, percentage-used (wear), media errors | `/api/4/smart`, looked up by the attribute's `key` field (`criticalWarning`, `percentageUsed`, `integrityErrors` — Glances' name for nvme-cli's `media_errors`) — slow tier |
 | Fan RPM | `/api/4/sensors`, label `pwmfan 0` — present on Argos/Selene's Active Coolers, absent on Alcyone — slow tier |
-| Backup detection | `/api/4/processlist` on Argos, matched against `raspiBackup`/`pigz`/`gzip` — fast tier |
+| Backup events | pushed by each host's backup job to `/api/backup-events/start` and `/finish` |
+
+### Backup event hooks
+
+Both hooks keep their curl calls in small root-only scripts (chmod 700,
+they hold the token) rather than inline in a unit or crontab: systemd
+strips `\"` escapes inside `ExecStopPost=/bin/bash -c '...'` before bash
+sees them, which once sent invalid JSON to `/finish` and left the event
+to be marked `interrupted`.
+
+- **Argos** (`raspibackup.service`, Fridays 04:00):
+  `ExecStartPre` posts `/start`;
+  `ExecStopPost=/usr/local/bin/raspibackup-finish.sh` posts `/finish`
+  with `completed`/`failed` from systemd's `$SERVICE_RESULT`.
+  raspiBackup must **not** stop the Docker daemon, or this container
+  goes down with it, records no temps, and marks the open event
+  `interrupted` on restart. `/usr/local/etc/raspiBackup.conf` therefore
+  uses `DEFAULT_STOPSERVICES="/usr/local/bin/raspibackup-stop-containers.sh"`
+  and `DEFAULT_STARTSERVICES="/usr/local/bin/raspibackup-start-containers.sh"`,
+  which stop and restart every container except `homelab-metrics`
+  (the list of stopped ones is kept in
+  `/var/lib/raspibackup-stopped-containers.list`).
+- **Alcyone** (ReaR, Wednesdays 04:00): `/etc/cron.d/rear-backup` runs
+  `/usr/local/bin/rear-backup-wrapper.sh`, which posts `/start`
+  (host `alcyone`), runs `/usr/sbin/rear mkbackup`, then posts `/finish`
+  with `completed`/`failed` from ReaR's exit code. Both curls use
+  `--max-time 10` and never block the backup if Argos is unreachable.
 
 Per-sensor `warning`/`critical` thresholds are pulled from Glances too
 (each host's own lm-sensors config, slow tier) and used for
@@ -176,31 +204,12 @@ matches the latest commit:
   the page ever opens its WebSocket, which looks exactly like being
   stuck on "connecting…" forever even though the backend is healthy.
 
-## Repo setup
+## Repo notes
 
-Two things push this to the Mac rather than doing it here, same as
-OfficeAQI:
-
-- This session's device bridge has no GitHub credentials configured.
-- Running `git init`/`git commit` directly against this NAS-mounted
-  folder throws `fatal: ... is not a valid object` - the same class of
-  corruption already hit and root-caused on the OfficeAQI NAS folder
-  (the network mount's write/caching behavior, not something retrying
-  fixes). No `.git` directory has been created here for that reason.
-
-So: copy this `HomelabMetrics/` folder to local disk on your Mac first
-(e.g. `~/Projects/HomelabMetrics`), then from there:
-
-```
-cd ~/Projects/HomelabMetrics
-git init
-git add -A
-git commit -m "Initial HomelabMetrics dashboard"
-git remote add origin git@github.com:menthol1979/HomelabMetrics.git
-git push -u origin main
-```
-
-(No commit exists yet anywhere - this NAS copy is the working tree, not a repo.)
+Don't run git directly against a NAS-mounted copy of this folder:
+`git init`/`git commit` there throws `fatal: ... is not a valid object`,
+the same network-mount corruption hit on the OfficeAQI NAS folder.
+Work from a local-disk clone instead.
 
 ## Open items not decided yet
 
