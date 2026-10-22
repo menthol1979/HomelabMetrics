@@ -34,6 +34,17 @@
   function fmtRpm(v) {
     return v === null || v === undefined ? "—" : `${Math.round(v)} RPM`;
   }
+  function fmtDateTime(isoString) {
+    const d = new Date(isoString);
+    const pad = (n) => String(n).padStart(2, "0");
+    const day = pad(d.getDate());
+    const month = pad(d.getMonth() + 1);
+    const year = d.getFullYear();
+    const hours = pad(d.getHours());
+    const minutes = pad(d.getMinutes());
+    const seconds = pad(d.getSeconds());
+    return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
+  }
   function classifyTemp(v, warn, crit, metricKey) {
     if (v === null || v === undefined) return "na";
     const d = DEFAULT_THRESHOLDS[metricKey] || {};
@@ -384,7 +395,7 @@
       return;
     }
     const rows = state.backupEvents.map((ev) => {
-      const start = new Date(ev.start_ts).toLocaleString();
+      const start = fmtDateTime(ev.start_ts);
       const dur = ev.duration_seconds ? `${Math.round(ev.duration_seconds / 60)} min` : "—";
       return `<tr>
         <td>${ev.host}</td>
