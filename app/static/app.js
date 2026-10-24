@@ -74,6 +74,15 @@
       card.className = "host-card";
       card.id = `card-${h.key}`;
       card.style.setProperty("--host-color", hostColor(h.key));
+      // Penelope only (has_second_drive) - its DRBD-backing SATA SSD
+      // reports completely different SMART attributes than the system
+      // NVMe above (see glances_client.py), so it gets its own small
+      // section rather than being squeezed into the NVMe-shaped rows.
+      const extraDriveSection = h.has_second_drive ? `
+        <div class="drive-divider" data-f="extra_drive_label">—</div>
+        <div class="metric-row"><span class="label">Temperature</span><span class="value na" data-f="extra_drive_temp">—</span></div>
+        <div class="metric-row"><span class="label">Reallocated sectors</span><span class="value na" data-f="extra_drive_reallocated_sectors">—</span></div>
+      ` : "";
       card.innerHTML = `
         <div class="card-head">
           <div class="name"><span class="swatch"></span>${h.display_name}<span class="stale-badge">STALE</span></div>
@@ -85,6 +94,7 @@
         <div class="metric-row"><span class="label">Critical warning</span><span class="value na" data-f="nvme_critical_warning">—</span></div>
         <div class="metric-row"><span class="label">Media errors</span><span class="value na" data-f="nvme_media_errors">—</span></div>
         <div class="metric-row"><span class="label">Fan speed</span><span class="value na" data-f="fan_rpm">—</span></div>
+        ${extraDriveSection}
       `;
       grid.appendChild(card);
     }
@@ -122,6 +132,13 @@
       m.nvme_media_errors === null || m.nvme_media_errors === undefined ? "—" : String(m.nvme_media_errors),
       m.nvme_media_errors > 0 ? "crit" : (m.nvme_media_errors === 0 ? "ok" : "na"));
     set("fan_rpm", fmtRpm(m.fan_rpm), "na");
+
+    const driveLabelEl = card.querySelector('[data-f="extra_drive_label"]');
+    if (driveLabelEl) driveLabelEl.textContent = m.extra_drive_label || "—";
+    set("extra_drive_temp", fmtTemp(m.extra_drive_temp), classifyTemp(m.extra_drive_temp, null, null, "extra_drive_temp"));
+    set("extra_drive_reallocated_sectors",
+      m.extra_drive_reallocated_sectors === null || m.extra_drive_reallocated_sectors === undefined ? "—" : String(m.extra_drive_reallocated_sectors),
+      m.extra_drive_reallocated_sectors > 0 ? "warn" : (m.extra_drive_reallocated_sectors === 0 ? "ok" : "na"));
 
     if (m.in_backup_window) card.classList.add("in-backup");
   }

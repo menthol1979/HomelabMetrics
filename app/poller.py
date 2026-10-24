@@ -49,6 +49,11 @@ SLOW_FIELDS = [
     # Fallback-only - not DB columns, stripped out of the metric dict in
     # run_fast_loop before insert/broadcast. See that function's docstring.
     "cpu_temp_slow", "nvme_composite_temp_slow",
+    # Penelope-only (see config.py's "has_second_drive") - not DB columns
+    # either, just carried over the WebSocket like slow_updated_at. None
+    # on every other host, since glances_client.py only populates these
+    # when a host's /api/4/smart reports more than one drive.
+    "extra_drive_label", "extra_drive_temp", "extra_drive_reallocated_sectors",
 ]
 
 

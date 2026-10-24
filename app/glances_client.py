@@ -14,6 +14,7 @@ a Glances processlist check.
 """
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -115,22 +116,95 @@ class GlancesClient:
         return warn, crit
 
     def _parse_smart(self, smart: list[dict[str, Any]]) -> dict[str, Any]:
+        """Most hosts in this fleet have exactly one drive (NVMe), whose
+        /api/4/smart entry uses NVMe SMART-log keys - criticalWarning,
+        percentageUsed, integrityErrors, etc, matching config.SMART_KEYS.
+        Penelope has a second, differently-shaped drive too (the Crucial
+        BX500 SATA SSD backing DRBD's replicated volume), which reports
+        classic ATA SMART attributes (Reallocated_Event_Count,
+        Temperature_Celsius, ...) under a completely different key
+        vocabulary - so rather than assume smart[0] is always "the"
+        drive, find whichever entry actually matches config.SMART_KEYS
+        and treat that as primary; anything else found is surfaced
+        separately as an "extra" drive instead of being forced into the
+        NVMe-shaped fields it doesn't have."""
         out: dict[str, Any] = {field: None for field in config.SMART_KEYS}
+        out["extra_drive_label"] = None
+        out["extra_drive_temp"] = None
+        out["extra_drive_reallocated_sectors"] = None
         if not smart:
             return out
 
-        # One NVMe drive per host in this fleet - take the first entry.
-        drive = smart[0]
-        # Numbered SMART attributes live as dict values keyed "1".."23";
-        # look each one up by its "key" field rather than assuming a
-        # fixed numeric index (not guaranteed stable across versions).
-        by_attr_key = {
-            attr.get("key"): attr.get("value")
-            for attr in drive.values()
-            if isinstance(attr, dict) and "key" in attr
-        }
+        primary_attrs: dict[str, Any] | None = None
+        extra_drive: dict[str, Any] | None = None
 
-        for field, attr_key in config.SMART_KEYS.items():
-            out[field] = by_attr_key.get(attr_key)
+        for drive in smart:
+            # Numbered SMART attributes live as dict values keyed
+            # "1".."23"; look each one up by its "key" field rather than
+            # assuming a fixed numeric index (not guaranteed stable
+            # across versions or drive types).
+            by_attr_key = {
+                attr.get("key"): attr
+                for attr in drive.values()
+                if isinstance(attr, dict) and "key" in attr
+            }
+            if primary_attrs is None and any(k in by_attr_key for k in config.SMART_KEYS.values()):
+                primary_attrs = {k: v.get("value") for k, v in by_attr_key.items()}
+                continue
+            if extra_drive is None:
+                extra_drive = {"device": drive.get("DeviceName"), "attrs": by_attr_key}
+
+        if primary_attrs:
+            for field, attr_key in config.SMART_KEYS.items():
+                out[field] = primary_attrs.get(attr_key)
+
+        if extra_drive:
+            out["extra_drive_label"] = extra_drive["device"]
+            out["extra_drive_temp"] = self._coerce_ata_temp(extra_drive["attrs"].get("Temperature_Celsius"))
+            out["extra_drive_reallocated_sectors"] = self._coerce_ata_count(
+                extra_drive["attrs"].get("Reallocated_Event_Count")
+            )
+            # Deliberately NOT surfacing attribute 202 "Percent_Lifetime_Remain"
+            # as a wear percentage - its raw-value polarity (percent used
+            # vs. percent remaining) is genuinely ambiguous and model/
+            # firmware-dependent even in vendor documentation for this
+            # exact drive family, and showing it backwards would be worse
+            # than not showing it. Reallocated-sector count and
+            # temperature are unambiguous across all ATA drives instead.
 
         return out
+
+    @staticmethod
+    def _coerce_ata_temp(attr: dict | None) -> float | None:
+        """ATA SMART temperature attributes (e.g. Temperature_Celsius)
+        report their raw value as a string like "45 (Min/Max 21/57)" -
+        take the leading number as the current reading, same 0-150C
+        plausibility guard as _coerce_temp."""
+        if not attr:
+            return None
+        raw = attr.get("raw")
+        if isinstance(raw, (int, float)):
+            value = raw
+        elif isinstance(raw, str):
+            match = re.match(r"-?\d+", raw.strip())
+            if not match:
+                return None
+            value = int(match.group())
+        else:
+            return None
+        if not (0 <= value <= 150):
+            return None
+        return float(value)
+
+    @staticmethod
+    def _coerce_ata_count(attr: dict | None) -> int | None:
+        """ATA SMART attributes like Reallocated_Event_Count report their
+        raw value as a numeric string - 0 is healthy, any nonzero is
+        worth seeing regardless of the drive vendor."""
+        if not attr:
+            return None
+        raw = attr.get("raw")
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None

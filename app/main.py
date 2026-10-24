@@ -117,6 +117,7 @@ async def get_hosts():
             "display_name": cfg["display_name"],
             "is_backup_host": cfg["is_backup_host"],
             "has_fan": cfg["has_fan"],
+            "has_second_drive": cfg.get("has_second_drive", False),
         }
         for key, cfg in config.HOSTS.items()
     ]

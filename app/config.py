@@ -50,17 +50,12 @@ import os
 # for Penelope. The floating IP is still correct for anything that
 # should follow the active node (Home Assistant, ProtectPanel, etc.) -
 # just not for per-node metrics like these.
+#
+# Dict order here drives the frontend's 2x2 host grid (top-left to
+# bottom-right) and the chart host-tabs, both of which just render
+# config.HOSTS in order - keep it as Argos/Selene on top, Alcyone/
+# Penelope on the bottom if that's ever rearranged again.
 HOSTS = {
-    "alcyone": {
-        "display_name": "Alcyone",
-        "ip": "192.168.1.13",
-        "port": 61208,
-        "cpu_temp_label": "Package id 0",
-        "is_backup_host": False,
-        # Dell OptiPlex 3060 Micro - no PWM fan sensor exposed via
-        # Glances/lm-sensors on Linux (see FAN_LABEL below).
-        "has_fan": False,
-    },
     "argos": {
         "display_name": "Argos",
         "ip": "192.168.1.17",
@@ -77,6 +72,16 @@ HOSTS = {
         "is_backup_host": False,
         "has_fan": True,
     },
+    "alcyone": {
+        "display_name": "Alcyone",
+        "ip": "192.168.1.13",
+        "port": 61208,
+        "cpu_temp_label": "Package id 0",
+        "is_backup_host": False,
+        # Dell OptiPlex 3060 Micro - no PWM fan sensor exposed via
+        # Glances/lm-sensors on Linux (see FAN_LABEL below).
+        "has_fan": False,
+    },
     "penelope": {
         "display_name": "Penelope",
         "ip": "192.168.1.14",
@@ -90,6 +95,13 @@ HOSTS = {
         # OptiPlex 3060 Micro, repurposed as the standby node) - no PWM
         # fan sensor for the same reason Alcyone has none.
         "has_fan": False,
+        # Penelope is the only host in this fleet with two drives: the
+        # system NVMe (nvme0) and the Crucial BX500 SATA SSD that backs
+        # DRBD's replicated volume. glances_client.py identifies the
+        # NVMe one by its SMART attribute vocabulary (same as every
+        # other host) and surfaces the second, differently-shaped ATA
+        # SMART drive separately - see GlancesClient._parse_smart.
+        "has_second_drive": True,
     },
 }
 
