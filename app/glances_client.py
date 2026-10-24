@@ -58,20 +58,47 @@ class GlancesClient:
 
         cpu_entry = by_label.get(self.cfg["cpu_temp_label"])
         out["cpu_temp_warn"], out["cpu_temp_crit"] = self._sane_thresholds(cpu_entry)
+        # Not a DB column, not broadcast - poller.py's run_fast_loop
+        # consumes this as a fallback for hosts (e.g. Penelope) that
+        # HomeLab-Pi5's mirror doesn't cover, or if the mirror is down.
+        out["cpu_temp_slow"] = self._coerce_temp(cpu_entry)
 
         # Sensor 1/2 only - "Composite" is supplied by the mirror at the
         # fast tier instead (see module docstring).
         for field in ("nvme_sensor1_temp", "nvme_sensor2_temp"):
             entry = by_label.get(config.NVME_SENSOR_LABELS[field])
-            out[field] = entry.get("value") if entry else None
+            out[field] = self._coerce_temp(entry)
 
         composite_entry = by_label.get(config.NVME_SENSOR_LABELS["nvme_composite_temp"])
         out["nvme_composite_warn"], out["nvme_composite_crit"] = self._sane_thresholds(composite_entry)
+        out["nvme_composite_temp_slow"] = self._coerce_temp(composite_entry)
 
         fan_entry = by_label.get(config.FAN_LABEL)
         out["fan_rpm"] = fan_entry.get("value") if fan_entry else None
 
         return out
+
+    @staticmethod
+    def _coerce_temp(entry: dict | None) -> float | None:
+        """Defensive guard against a non-temperature sensor (most
+        plausibly a fan) slipping into a temperature field through a
+        label mix-up - this exact failure mode once showed a fan
+        reading as 1357 degrees on the HomeLab-Pi5 dashboard. Only
+        trust a value that looks like a Celsius reading per Glances'
+        own unit field (when it bothers to send one) and that falls in
+        a range physically possible for a CPU or NVMe drive - anything
+        else is treated as missing rather than trusted."""
+        if not entry:
+            return None
+        value = entry.get("value")
+        if not isinstance(value, (int, float)):
+            return None
+        unit = entry.get("unit")
+        if unit not in (None, "C", "°C"):
+            return None
+        if not (0 <= value <= 150):
+            return None
+        return float(value)
 
     @staticmethod
     def _sane_thresholds(entry: dict | None) -> tuple[float | None, float | None]:

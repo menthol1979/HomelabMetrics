@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const HOST_COLORS = { alcyone: "#7c9fff", argos: "#ff9f5c", selene: "#c58bff" };
+  const HOST_COLORS = { alcyone: "#7c9fff", argos: "#ff9f5c", selene: "#c58bff", penelope: "#5ce6b8" };
   const DEFAULT_THRESHOLDS = {
     cpu_temp: { warn: 75, crit: 85 },
     nvme_composite_temp: { warn: 70, crit: 82 },

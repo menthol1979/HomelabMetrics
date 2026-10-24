@@ -36,10 +36,24 @@ async def fetch_mirror_temps(client: httpx.AsyncClient) -> dict[str, dict[str, A
     for host_key in config.HOSTS:
         host_json = payload.get(host_key)
         if not isinstance(host_json, dict):
+            # Expected for a host the mirror doesn't track at all (e.g.
+            # Penelope, added after HomeLab-Pi5's mirror) - the fast loop
+            # falls back to that host's own slow-tier Glances reading.
             continue
         if host_json.get("has_cpu_temp"):
-            result[host_key]["cpu_temp"] = host_json.get("cpu_temp_c")
+            result[host_key]["cpu_temp"] = _plausible_temp(host_json.get("cpu_temp_c"))
         if host_json.get("has_ssd_temp"):
-            result[host_key]["nvme_composite_temp"] = host_json.get("ssd_temp_c")
+            result[host_key]["nvme_composite_temp"] = _plausible_temp(host_json.get("ssd_temp_c"))
 
     return result
+
+
+def _plausible_temp(value: Any) -> float | None:
+    """Same defensive range check as glances_client.py's _coerce_temp,
+    applied here too since this value is sourced from a separate
+    project (HomeLab-Pi5) rather than parsed from Glances directly."""
+    if not isinstance(value, (int, float)):
+        return None
+    if not (0 <= value <= 150):
+        return None
+    return float(value)

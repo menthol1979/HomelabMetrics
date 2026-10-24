@@ -6,13 +6,18 @@ module docstring for why):
     fills SlowFieldsCache with NVMe Sensor 1/2, fan RPM, thresholds,
     critical_warning, media_errors, percentage_used.
   - run_fast_loop: a single loop (not per-host - one mirror call covers
-    all three hosts), every config.MIRROR_POLL_INTERVAL. Fetches
-    cpu_temp/nvme_composite_temp for all hosts from HomeLab-Pi5's web
+    Alcyone/Argos/Selene), every config.MIRROR_POLL_INTERVAL. Fetches
+    cpu_temp/nvme_composite_temp for those hosts from HomeLab-Pi5's web
     mirror in one call and merges in each host's latest cached slow
-    fields. Backup windows are no longer detected here at all - see
-    backup_state.py and main.py's POST /api/backup-events/{start,finish}
-    - this loop only reads backup_state.active to stamp
-    in_backup_window on whichever host currently has one open.
+    fields. For a host the mirror doesn't cover (Penelope), or for any
+    host on a tick where the mirror came back empty, cpu_temp/
+    nvme_composite_temp fall back to that host's own slow-tier Glances
+    reading (cpu_temp_slow/nvme_composite_temp_slow, see
+    glances_client.py) instead of going blank. Backup windows are no
+    longer detected here at all - see backup_state.py and main.py's
+    POST /api/backup-events/{start,finish} - this loop only reads
+    backup_state.active to stamp in_backup_window on whichever host
+    currently has one open.
   - run_retention_sweeper: unchanged, hourly DB prune.
 
 A metric row is only ever written by the fast loop, once per host per
@@ -41,6 +46,9 @@ SLOW_FIELDS = [
     "nvme_sensor1_temp", "nvme_sensor2_temp", "fan_rpm",
     "cpu_temp_warn", "cpu_temp_crit", "nvme_composite_warn", "nvme_composite_crit",
     "nvme_critical_warning", "nvme_media_errors", "nvme_percentage_used",
+    # Fallback-only - not DB columns, stripped out of the metric dict in
+    # run_fast_loop before insert/broadcast. See that function's docstring.
+    "cpu_temp_slow", "nvme_composite_temp_slow",
 ]
 
 
@@ -93,12 +101,28 @@ async def run_fast_loop(cache: SlowFieldsCache, broadcast_fn, stop_event: asynci
             fast_by_host = await mirror_client.fetch_mirror_temps(http_client)
 
             for host_key in config.HOSTS:
+                fast = fast_by_host[host_key]
+                slow = cache.get(host_key)
                 metric = {
                     "host": host_key,
                     "ts": _now_iso(),
-                    **fast_by_host[host_key],
-                    **cache.get(host_key),
+                    **slow,
+                    **fast,
                 }
+                # The mirror (fast tier) wins when it has a real reading -
+                # it's fresher (3s vs 60s). Fall back to this host's own
+                # slow-tier Glances reading only when the mirror has
+                # nothing: either it doesn't cover this host at all
+                # (Penelope - added after the HomeLab-Pi5 mirror, not yet
+                # wired into it) or this particular tick came back empty
+                # (mirror unreachable).
+                if metric.get("cpu_temp") is None:
+                    metric["cpu_temp"] = slow.get("cpu_temp_slow")
+                if metric.get("nvme_composite_temp") is None:
+                    metric["nvme_composite_temp"] = slow.get("nvme_composite_temp_slow")
+                metric.pop("cpu_temp_slow", None)
+                metric.pop("nvme_composite_temp_slow", None)
+
                 metric["in_backup_window"] = 1 if host_key in backup_state.active else 0
                 # Not a DB column - db.insert_metric() ignores extra dict
                 # keys - just carried over the WebSocket so the frontend

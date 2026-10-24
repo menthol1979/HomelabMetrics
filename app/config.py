@@ -7,8 +7,14 @@ HomeLab-Pi5 project's own 3s Glances polling of Argos/Alcyone/Selene
 
   - FAST tier (MIRROR_POLL_INTERVAL): one HTTP call to HomeLab-Pi5's own
     "web mirror" at MIRROR_URL, which already dumps its live-polled
-    cpu_temp/ssd_temp for all three hosts in one response. No duplicate
-    Glances traffic at all for these two fields.
+    cpu_temp/ssd_temp for Alcyone/Argos/Selene in one response. No
+    duplicate Glances traffic at all for these two fields on those
+    three hosts. Penelope isn't covered by that mirror (it predates the
+    HA pair), so for Penelope specifically cpu_temp/nvme_composite_temp
+    instead fall back to its own slow-tier Glances reading - see
+    glances_client.py's cpu_temp_slow/nvme_composite_temp_slow and
+    poller.py's run_fast_loop for the fallback. Same safety net covers
+    the other three hosts too if the mirror itself is ever down.
   - SLOW tier (SLOW_POLL_INTERVAL): a direct, low-frequency call per
     host to Glances' own /sensors and /smart, for the handful of fields
     the web mirror doesn't carry (NVMe Sensor 1/2, fan RPM, per-host
@@ -34,10 +40,20 @@ tick, so there's nothing to miss even if a tick is slow or dropped.
 
 import os
 
+# IMPORTANT: Alcyone and Penelope are a Pacemaker/Corosync + DRBD
+# active/passive HA pair. 192.168.1.10 is the pair's FLOATING IP - it
+# always answers from whichever node is currently active, so it must
+# NEVER be used as a per-node polling target here (it would silently
+# show one node's metrics under the other node's name after a
+# failover, exactly like the HomeLab-Pi5 physical dashboard once did).
+# Each node's own fixed address is used instead: .13 for Alcyone, .14
+# for Penelope. The floating IP is still correct for anything that
+# should follow the active node (Home Assistant, ProtectPanel, etc.) -
+# just not for per-node metrics like these.
 HOSTS = {
     "alcyone": {
         "display_name": "Alcyone",
-        "ip": "192.168.1.10",
+        "ip": "192.168.1.13",
         "port": 61208,
         "cpu_temp_label": "Package id 0",
         "is_backup_host": False,
@@ -60,6 +76,20 @@ HOSTS = {
         "cpu_temp_label": "cpu_thermal 0",
         "is_backup_host": False,
         "has_fan": True,
+    },
+    "penelope": {
+        "display_name": "Penelope",
+        "ip": "192.168.1.14",
+        "port": 61208,
+        "cpu_temp_label": "Package id 0",
+        # The HA standby's own backup story isn't wired up yet (still
+        # planning per the HA runbook) - flip this once it posts its
+        # own /api/backup-events.
+        "is_backup_host": False,
+        # Same physical box as Alcyone used to be (the old 8500T
+        # OptiPlex 3060 Micro, repurposed as the standby node) - no PWM
+        # fan sensor for the same reason Alcyone has none.
+        "has_fan": False,
     },
 }
 

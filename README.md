@@ -1,10 +1,10 @@
 # Homelab Metrics Dashboard
 
-Always-on health logging for Alcyone, Argos, and Selene: continuous CPU/NVMe
-temperature, wear, and fan-speed tracking, plus a record of every weekly
-backup (Argos's Friday 04:00 `raspiBackup`, Alcyone's Wednesday 04:00
-ReaR) so each one leaves a retrievable trace of how long it took and how
-hot it actually got.
+Always-on health logging for Alcyone, Argos, Selene, and Penelope:
+continuous CPU/NVMe temperature, wear, and fan-speed tracking, plus a
+record of every weekly backup (Argos's Friday 04:00 `raspiBackup`,
+Alcyone's Wednesday 04:00 ReaR) so each one leaves a retrievable trace of
+how long it took and how hot it actually got.
 
 Built on the same stack as [OfficeAQI](https://github.com/menthol1979/OfficeAQI):
 FastAPI + Uvicorn backend, SQLite storage, a WebSocket live feed, and a
@@ -24,7 +24,11 @@ itself. Polling is split into three pieces instead:
   `cpu_temp`/`ssd_temp` (NVMe composite) for Argos, Alcyone, and Selene
   in a single response — that project's own 3s Glances poll, reused
   rather than duplicated. This tier drives the chart resolution and the
-  backup-event peak-temperature tracking.
+  backup-event peak-temperature tracking. Penelope predates that mirror
+  and isn't in it, so its `cpu_temp`/`nvme_composite_temp` instead come
+  from its own slow-tier Glances poll below (60s cadence instead of 3s)
+  — see "Known limitation" further down for the same fallback kicking in
+  for any host if the mirror itself goes down.
 - **Slow tier (every 60s per host, `SLOW_POLL_INTERVAL`):** a direct,
   low-frequency call to each host's own `/api/4/sensors` and
   `/api/4/smart` for the handful of fields the mirror doesn't carry:
@@ -46,24 +50,49 @@ whatever the slow tier most recently cached for that host — so a row
 is always "complete" even though its fields update at different rates
 under the hood.
 
-**Trade-off worth knowing:** `cpu_temp`/`nvme_composite_temp` now
-depend on HomeLab-Pi5's `home-dash.service` (and its web-mirror thread)
-being up on Argos. If that service is down, those two fields go blank
-in this dashboard until it's back — the slow-tier fields (wear,
-critical_warning, media_errors, fan, thresholds) are unaffected, since
-they're polled independently. Backup events still open and close, but
-their peak temps come out empty for that window.
+**Trade-off worth knowing:** `cpu_temp`/`nvme_composite_temp` for
+Alcyone/Argos/Selene depend on HomeLab-Pi5's `home-dash.service` (and
+its web-mirror thread) being up on Argos. If that service is down, or
+Argos's own `glances` container is stopped for any reason (this bit us
+once during Argos's own backup — see "Backup event hooks" below), those
+two fields fall back to that host's own slow-tier Glances reading
+(60s cadence) instead of going blank outright. The slow-tier fields
+(wear, critical_warning, media_errors, fan, thresholds) are unaffected
+either way, since they're polled independently. Backup events still
+open and close, but their peak temps come out empty for a window where
+even the slow-tier fallback had nothing (e.g. the host itself was
+briefly unreachable, not just the mirror).
+
+**HA pair gotcha — never poll the floating IP for a per-node metric:**
+Alcyone and Penelope are a Pacemaker/Corosync + DRBD active/passive
+pair. `192.168.1.10` is the pair's *floating* IP — it always answers
+from whichever node is currently active, so a per-node metric (CPU/NVMe
+temp, wear, uptime, Glances, smartctl, anything labelled "alcyone" or
+"penelope") read through it will silently show the wrong node's data
+after a failover. This already happened once to the HomeLab-Pi5 physical
+dashboard. `app/config.py`'s `HOSTS` therefore points Alcyone and
+Penelope at their own fixed addresses (`.13` and `.14`) rather than
+`.10` — the floating IP stays correct only for things that *should*
+follow the active node (Home Assistant, ProtectPanel, etc.), which this
+project doesn't poll at all.
 
 ### Data sources, mapped
 
 | Metric | Source |
 | --- | --- |
-| CPU temperature | HomeLab-Pi5 web mirror, `cpu_temp_c` (guarded by `has_cpu_temp`) |
-| NVMe composite temp | HomeLab-Pi5 web mirror, `ssd_temp_c` (guarded by `has_ssd_temp`) |
-| NVMe Sensor 1 / Sensor 2 temps | `/api/4/sensors`, labels `Sensor 1` / `Sensor 2` (same on all three hosts) — slow tier |
+| CPU temperature | HomeLab-Pi5 web mirror, `cpu_temp_c` (guarded by `has_cpu_temp`) for Alcyone/Argos/Selene; Penelope (not in that mirror) falls back to `/api/4/sensors`, label `Package id 0` — slow tier |
+| NVMe composite temp | HomeLab-Pi5 web mirror, `ssd_temp_c` (guarded by `has_ssd_temp`) for Alcyone/Argos/Selene; Penelope falls back to `/api/4/sensors`, label `Composite` — slow tier |
+| NVMe Sensor 1 / Sensor 2 temps | `/api/4/sensors`, labels `Sensor 1` / `Sensor 2` (same labels on all four hosts) — slow tier |
 | NVMe critical-warning flag, percentage-used (wear), media errors | `/api/4/smart`, looked up by the attribute's `key` field (`criticalWarning`, `percentageUsed`, `integrityErrors` — Glances' name for nvme-cli's `media_errors`) — slow tier |
-| Fan RPM | `/api/4/sensors`, label `pwmfan 0` — present on Argos/Selene's Active Coolers, absent on Alcyone — slow tier |
+| Fan RPM | `/api/4/sensors`, label `pwmfan 0` — present on Argos/Selene's Active Coolers, absent on Alcyone and Penelope (same fanless OptiPlex 3060 Micro case) — slow tier |
 | Backup events | pushed by each host's backup job to `/api/backup-events/start` and `/finish` |
+
+All temperature readings (fast-tier mirror and slow-tier Glances alike)
+are range-checked (0-150°C, and Celsius-unit-checked where Glances
+supplies a unit) before being trusted — a fan-speed sensor matching a
+temperature-field lookup once showed up as a 1357°C reading on the
+HomeLab-Pi5 dashboard, and this guards against the same failure mode
+here. See `GlancesClient._coerce_temp` / `mirror_client._plausible_temp`.
 
 ### Backup event hooks
 
