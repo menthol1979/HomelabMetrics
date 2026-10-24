@@ -37,7 +37,12 @@ CREATE TABLE IF NOT EXISTS metrics (
     cpu_temp_crit REAL,
     nvme_composite_warn REAL,
     nvme_composite_crit REAL,
-    in_backup_window INTEGER NOT NULL DEFAULT 0
+    in_backup_window INTEGER NOT NULL DEFAULT 0,
+    -- Penelope-only (config.py's has_second_drive): temperature of its
+    -- second, non-NVMe drive (the DRBD-backing SATA SSD). NULL for
+    -- every other host. See _migrate_add_column below for how this
+    -- lands on a database that predates this column.
+    extra_drive_temp REAL
 );
 CREATE INDEX IF NOT EXISTS idx_metrics_host_ts ON metrics (host, ts);
 
@@ -59,6 +64,19 @@ def init_db() -> None:
     Path(config.DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     with _connect() as conn:
         conn.executescript(SCHEMA)
+        # CREATE TABLE IF NOT EXISTS above only helps a brand-new
+        # database - Argos's existing production DB already has a
+        # `metrics` table without this column, so it needs an explicit
+        # ALTER TABLE. Safe to run on every startup: skips if the
+        # column's already there (fresh DBs created with the schema
+        # above, or a DB that's already been migrated once).
+        _migrate_add_column(conn, "metrics", "extra_drive_temp", "REAL")
+
+
+def _migrate_add_column(conn: sqlite3.Connection, table: str, column: str, col_type: str) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
 
 
 @contextmanager
@@ -80,11 +98,13 @@ def insert_metric(metric: dict) -> None:
                 host, ts, cpu_temp, nvme_composite_temp, nvme_sensor1_temp,
                 nvme_sensor2_temp, nvme_critical_warning, nvme_media_errors,
                 nvme_percentage_used, fan_rpm, cpu_temp_warn, cpu_temp_crit,
-                nvme_composite_warn, nvme_composite_crit, in_backup_window
+                nvme_composite_warn, nvme_composite_crit, in_backup_window,
+                extra_drive_temp
             ) VALUES (:host, :ts, :cpu_temp, :nvme_composite_temp, :nvme_sensor1_temp,
                 :nvme_sensor2_temp, :nvme_critical_warning, :nvme_media_errors,
                 :nvme_percentage_used, :fan_rpm, :cpu_temp_warn, :cpu_temp_crit,
-                :nvme_composite_warn, :nvme_composite_crit, :in_backup_window)
+                :nvme_composite_warn, :nvme_composite_crit, :in_backup_window,
+                :extra_drive_temp)
             """,
             metric,
         )

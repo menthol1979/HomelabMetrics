@@ -342,6 +342,10 @@
     };
   }
 
+  function hostHasSecondDrive(hostKey) {
+    return !!state.hosts.find((h) => h.key === hostKey)?.has_second_drive;
+  }
+
   function buildRightOption(rows, latestThresholds) {
     const nvmeData = movingAverage(rows.map((r) => [r.ts, r.nvme_composite_temp]), smoothingWindow(rows.length));
 
@@ -358,6 +362,16 @@
         ],
       },
     });
+    const series = [nvmeSeries];
+
+    // Penelope only - its second (SATA) drive has no Glances-reported
+    // warn/crit thresholds (ATA SMART doesn't carry them the way
+    // nvme-cli's sensors do), so this series gets no markLine, just the
+    // trend line itself on the same 20-100C axis as NVMe composite.
+    if (hostHasSecondDrive(state.activeHost)) {
+      const extraData = movingAverage(rows.map((r) => [r.ts, r.extra_drive_temp]), smoothingWindow(rows.length));
+      series.push(glowSeries("SATA SSD (DRBD)", "#5ce6b8", extraData, {}));
+    }
 
     return {
       backgroundColor: "transparent",
@@ -370,7 +384,7 @@
       legend: { top: 0, textStyle: { color: "#8794ab" } },
       xAxis: { type: "time", axisLine: { lineStyle: { color: "#1e2740" } }, axisLabel: { color: "#8794ab" } },
       yAxis: { type: "value", name: "°C", nameTextStyle: { color: "#8794ab" }, ...AXIS_COMMON, ...TEMP_AXIS_RANGE },
-      series: [nvmeSeries],
+      series,
     };
   }
 
